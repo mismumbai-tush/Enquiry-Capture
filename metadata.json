@@ -1,0 +1,6 @@
+{
+  "name": "OCR Inquiry Sheet Sync",
+  "description": "An interactive inquiry form that captures photos, automatically extracts customer contact details via Gemini OCR, and saves them to Google Sheets.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
