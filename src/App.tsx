@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   Camera,
   UploadCloud,
@@ -264,10 +264,19 @@ export default function App() {
       if (cameraStream) {
         cameraStream.getTracks().forEach((track) => track.stop());
       }
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "environment" },
-        audio: false,
-      });
+      let stream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: "environment" },
+          audio: false,
+        });
+      } catch (envErr) {
+        console.warn("Could not access environment camera, trying any available camera:", envErr);
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: true,
+          audio: false,
+        });
+      }
       setCameraStream(stream);
     } catch (err: any) {
       console.error("Camera error:", err);
@@ -293,10 +302,11 @@ export default function App() {
     return () => stopCamera();
   }, [captureMode]);
 
-  // Bind stream to the video element once the video element mounts (after cameraStream is set and re-render occurs)
-  useEffect(() => {
-    if (cameraStream && videoRef.current) {
-      videoRef.current.srcObject = cameraStream;
+  // Callback ref to bind stream immediately when the video element mounts, preventing race conditions
+  const setVideoRef = useCallback((node: HTMLVideoElement | null) => {
+    videoRef.current = node;
+    if (node && cameraStream) {
+      node.srcObject = cameraStream;
     }
   }, [cameraStream]);
 
@@ -613,10 +623,10 @@ export default function App() {
                   {cameraStream ? (
                     <>
                       <video
-                        ref={videoRef}
+                        ref={setVideoRef}
                         autoPlay
                         playsInline
-                        className="w-full h-full object-cover scale-x-[-1]"
+                        className="w-full h-full object-cover"
                       />
                       {/* Scanning visual indicator */}
                       <div className="absolute inset-x-0 h-0.5 bg-[#673ab7]/50 shadow-[0_0_10px_#673ab7] scanner-line top-0" />
