@@ -53,10 +53,12 @@ export default function App() {
   // Google Apps Script Web App sync configuration
   const [googleAppsScriptUrl, setGoogleAppsScriptUrl] = useState<string>("");
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isSettingsExpanded, setIsSettingsExpanded] = useState(true); // Always open/editable on main page by default
   const [isSavingSettings, setIsSavingSettings] = useState(false);
   const [settingsSaveSuccess, setSettingsSaveSuccess] = useState(false);
   const [settingsSaveError, setSettingsSaveError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [isEnvConfigured, setIsEnvConfigured] = useState(false);
 
   // Spreadsheet state
   const [spreadsheets, setSpreadsheets] = useState<GoogleDriveFile[]>([]);
@@ -113,6 +115,10 @@ export default function App() {
           }
           if (config.spreadsheetId) {
             setSelectedSpreadsheetId(config.spreadsheetId);
+          }
+          if (config.isEnvConfigured) {
+            setIsEnvConfigured(true);
+            setIsSettingsExpanded(false); // Do not expand if configured via environment variables
           }
         }
       } catch (err) {
@@ -509,30 +515,6 @@ export default function App() {
               </p>
             </div>
           </div>
-
-          {/* Connection Settings & Admin controls */}
-          <div className="flex items-center gap-3">
-            {googleAppsScriptUrl ? (
-              <span className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-full">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-                <span>Live Sync Active</span>
-              </span>
-            ) : (
-              <span className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold bg-amber-50 text-amber-700 border border-amber-200 rounded-full">
-                <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
-                <span>Demo Mode (Unlinked)</span>
-              </span>
-            )}
-
-            <button
-              onClick={() => setIsSettingsOpen(true)}
-              id="settings-btn"
-              className="inline-flex items-center gap-2 py-1.5 px-3 border border-slate-200 rounded-lg bg-white hover:bg-[#f3f0f9] hover:text-[#673ab7] text-slate-700 font-semibold text-xs transition-all shadow-3xs cursor-pointer"
-            >
-              <Settings size={14} className="text-[#673ab7]" />
-              <span>Connection Settings</span>
-            </button>
-          </div>
         </div>
       </header>
 
@@ -552,29 +534,17 @@ export default function App() {
               Welcome to the unified digital inquiry desk. Take a snapshot of hand-written notes, invoices, receipts, or business cards. Our background Gemini system extracts the customer profile details automatically and queues them directly as structured entries inside your linked Google Spreadsheet.
             </p>
             
-            <div className="border-t border-slate-150 pt-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-slate-500 bg-slate-50/60 p-3 rounded-lg border border-slate-100">
+            <div className="border-t border-slate-150 pt-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-slate-500 bg-[#fbfaff] p-3.5 rounded-lg border border-indigo-100/40">
               <div className="flex items-center gap-2">
                 <CheckCircle className="text-[#673ab7]" size={14} />
-                <span>
-                  Submitting responses securely directly to Google Sheet <strong>({selectedSpreadsheetId ? `${selectedSpreadsheetId.slice(0, 10)}...` : "Unlinked"})</strong>
+                <span className="font-medium text-slate-600">
+                  Submitting responses securely directly to Google Sheet
                 </span>
               </div>
               <span className="text-[10px] bg-indigo-50 text-indigo-800 border border-indigo-100 px-2 py-0.5 rounded font-medium">
                 No Sign-in Required
               </span>
             </div>
-
-            {!googleAppsScriptUrl && (
-              <div className="mt-4 p-4 bg-amber-50 border border-amber-200 rounded-lg text-left text-xs text-amber-800 space-y-2">
-                <div className="flex items-center gap-2 font-bold text-amber-900">
-                  <AlertCircle size={15} />
-                  <span>Google Sheet Connection Needed</span>
-                </div>
-                <p className="leading-relaxed">
-                  This form is currently running in <strong>Demo/Offline Mode</strong>. Your submitters can capture images and extract text, but data won't persist to your Google Sheet until you paste your <strong>Google Apps Script Web App URL</strong>. Click <strong>Connection Settings</strong> at the top to configure your connection in 2 minutes!
-                </p>
-              </div>
-            )}
           </div>
         </section>
 

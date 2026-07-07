@@ -134,15 +134,31 @@ const CONFIG_FILE = path.join(process.cwd(), "config.json");
 // API endpoint to retrieve form configuration
 app.get("/api/settings", (req, res) => {
   try {
-    if (fs.existsSync(CONFIG_FILE)) {
-      const raw = fs.readFileSync(CONFIG_FILE, "utf-8");
-      res.json(JSON.parse(raw));
-    } else {
-      res.json({
-        googleAppsScriptUrl: "",
-        spreadsheetId: "1RvuYa_xa1iF-z_iS0nQr3aFIeQiAZhvwLNCudex1KXw"
-      });
+    const isEnvConfigured = !!(process.env.GOOGLE_APPS_SCRIPT_URL || process.env.GOOGLE_SPREADSHEET_ID);
+    
+    // Default values
+    let googleAppsScriptUrl = process.env.GOOGLE_APPS_SCRIPT_URL || "";
+    let spreadsheetId = process.env.GOOGLE_SPREADSHEET_ID || "1RvuYa_xa1iF-z_iS0nQr3aFIeQiAZhvwLNCudex1KXw";
+
+    // Read from config file if env vars are not set
+    if (!process.env.GOOGLE_APPS_SCRIPT_URL || !process.env.GOOGLE_SPREADSHEET_ID) {
+      if (fs.existsSync(CONFIG_FILE)) {
+        const raw = fs.readFileSync(CONFIG_FILE, "utf-8");
+        const parsed = JSON.parse(raw);
+        if (!process.env.GOOGLE_APPS_SCRIPT_URL) {
+          googleAppsScriptUrl = parsed.googleAppsScriptUrl || googleAppsScriptUrl;
+        }
+        if (!process.env.GOOGLE_SPREADSHEET_ID) {
+          spreadsheetId = parsed.spreadsheetId || spreadsheetId;
+        }
+      }
     }
+
+    res.json({
+      googleAppsScriptUrl,
+      spreadsheetId,
+      isEnvConfigured
+    });
   } catch (err: any) {
     console.error("Error loading config:", err);
     res.status(500).json({ error: "Failed to load settings." });
@@ -153,6 +169,13 @@ app.get("/api/settings", (req, res) => {
 app.post("/api/settings", (req, res) => {
   try {
     const { googleAppsScriptUrl, spreadsheetId } = req.body;
+    
+    // Do not allow updating if configured in the environment variables
+    if (process.env.GOOGLE_APPS_SCRIPT_URL && process.env.GOOGLE_SPREADSHEET_ID) {
+      res.status(403).json({ error: "Configuration is locked via server-side environment variables." });
+      return;
+    }
+
     const config = {
       googleAppsScriptUrl: googleAppsScriptUrl || "",
       spreadsheetId: spreadsheetId || "1RvuYa_xa1iF-z_iS0nQr3aFIeQiAZhvwLNCudex1KXw"
@@ -175,8 +198,8 @@ app.post("/api/submit-response", async (req, res) => {
       return;
     }
 
-    // Determine the Apps Script URL
-    let scriptUrl = googleAppsScriptUrl;
+    // Determine the Apps Script URL - check environment variable first
+    let scriptUrl = process.env.GOOGLE_APPS_SCRIPT_URL || googleAppsScriptUrl;
     if (!scriptUrl) {
       if (fs.existsSync(CONFIG_FILE)) {
         const raw = fs.readFileSync(CONFIG_FILE, "utf-8");
