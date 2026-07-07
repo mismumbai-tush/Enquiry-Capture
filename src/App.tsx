@@ -23,6 +23,10 @@ import {
   Layers,
   Check,
   FileUp,
+  Settings,
+  Copy,
+  X,
+  HelpCircle,
 } from "lucide-react";
 import {
   initAuth,
@@ -42,12 +46,21 @@ export default function App() {
   // Auth state
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [token, setToken] = useState<string | null>(null);
-  const [needsAuth, setNeedsAuth] = useState(true);
+  const [needsAuth, setNeedsAuth] = useState(false); // Default to false so public users can submit
   const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+
+  // Google Apps Script Web App sync configuration
+  const [googleAppsScriptUrl, setGoogleAppsScriptUrl] = useState<string>("");
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isSavingSettings, setIsSavingSettings] = useState(false);
+  const [settingsSaveSuccess, setSettingsSaveSuccess] = useState(false);
+  const [settingsSaveError, setSettingsSaveError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
 
   // Spreadsheet state
   const [spreadsheets, setSpreadsheets] = useState<GoogleDriveFile[]>([]);
-  const [selectedSpreadsheetId, setSelectedSpreadsheetId] = useState<string>("");
+  const [selectedSpreadsheetId, setSelectedSpreadsheetId] = useState<string>("1RvuYa_xa1iF-z_iS0nQr3aFIeQiAZhvwLNCudex1KXw");
   const [newSheetTitle, setNewSheetTitle] = useState("Inquiry Captures Log");
   const [isCreatingSheet, setIsCreatingSheet] = useState(false);
   const [isLoadingSheets, setIsLoadingSheets] = useState(false);
@@ -88,19 +101,70 @@ export default function App() {
   // Drag and drop state
   const [isDragging, setIsDragging] = useState(false);
 
+  // Load backend configurations on mount
+  useEffect(() => {
+    const fetchSettings = async () => {
+      try {
+        const res = await fetch("/api/settings");
+        if (res.ok) {
+          const config = await res.json();
+          if (config.googleAppsScriptUrl) {
+            setGoogleAppsScriptUrl(config.googleAppsScriptUrl);
+          }
+          if (config.spreadsheetId) {
+            setSelectedSpreadsheetId(config.spreadsheetId);
+          }
+        }
+      } catch (err) {
+        console.error("Failed to load server settings:", err);
+      }
+    };
+    fetchSettings();
+  }, []);
+
+  // Save settings handler (सेटिंग्स सेव करने का हैंडलर)
+  const handleSaveSettings = async () => {
+    setIsSavingSettings(true);
+    setSettingsSaveError(null);
+    setSettingsSaveSuccess(false);
+    try {
+      const res = await fetch("/api/settings", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          googleAppsScriptUrl: googleAppsScriptUrl.trim(),
+          spreadsheetId: selectedSpreadsheetId.trim(),
+        }),
+      });
+      if (!res.ok) {
+        throw new Error("Failed to save connection settings to backend.");
+      }
+      setSettingsSaveSuccess(true);
+      setTimeout(() => {
+        setSettingsSaveSuccess(false);
+        setIsSettingsOpen(false);
+      }, 1500);
+    } catch (err: any) {
+      setSettingsSaveError(err.message || "Failed to save settings.");
+    } finally {
+      setIsSavingSettings(false);
+    }
+  };
+
   // 1. Initialize Auth on mount
   useEffect(() => {
     const unsubscribe = initAuth(
       (currentUser, accessToken) => {
         setUser(currentUser);
         setToken(accessToken);
-        setNeedsAuth(false);
+        // Do not force needsAuth = true or block layout
         fetchSpreadsheets(accessToken);
       },
       () => {
         setUser(null);
         setToken(null);
-        setNeedsAuth(true);
       }
     );
     return () => {
@@ -116,12 +180,13 @@ export default function App() {
     try {
       const files = await listSpreadsheets(accessToken);
       setSpreadsheets(files);
+      // Only overwrite selectedSpreadsheetId if it's currently empty
       if (files.length > 0 && !selectedSpreadsheetId) {
         setSelectedSpreadsheetId(files[0].id);
       }
     } catch (err: any) {
       console.error(err);
-      setSheetsError("Could not load spreadsheets. Check your Drive permissions.");
+      setSheetsError("Could not list Google Drive files automatically. You can still paste or use your preconfigured Sheet ID below!");
     } finally {
       setIsLoadingSheets(false);
     }
@@ -131,6 +196,7 @@ export default function App() {
   const handleLogin = async () => {
     setIsLoggingIn(true);
     setSheetsError(null);
+    setAuthError(null);
     try {
       const result = await googleSignIn();
       if (result) {
@@ -139,8 +205,15 @@ export default function App() {
         setNeedsAuth(false);
         await fetchSpreadsheets(result.accessToken);
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error("Login failed:", err);
+      if (err.code === "auth/unauthorized-domain") {
+        setAuthError(
+          "Domain Authorization Required: This domain (enquiry-capture.vercel.app) is not authorized for OAuth in your Firebase project. To resolve this, add 'enquiry-capture.vercel.app' in the Firebase Console under Authentication -> Settings -> Authorized Domains."
+        );
+      } else {
+        setAuthError(err.message || "Failed to authenticate with Google. Please try again.");
+      }
     } finally {
       setIsLoggingIn(false);
     }
@@ -209,13 +282,13 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (!needsAuth && captureMode === "camera") {
+    if (captureMode === "camera") {
       startCamera();
     } else {
       stopCamera();
     }
     return () => stopCamera();
-  }, [captureMode, needsAuth]);
+  }, [captureMode]);
 
   // Capture current video frame
   const handleCapture = () => {
@@ -328,10 +401,63 @@ export default function App() {
 
   // 10. Write to Spreadsheet
   const handleConfirmSave = async () => {
-    if (!token || !selectedSpreadsheetId || !extractedData) return;
+    if (!selectedSpreadsheetId || !extractedData) {
+      alert("Please select or paste a Google Sheet ID in the Connection Settings.");
+      return;
+    }
     setIsSaving(true);
+    setSaveSuccess(false);
+
     try {
-      const selectedFile = spreadsheets.find((s) => s.id === selectedSpreadsheetId);
+      // MODE 1: Google Apps Script Web App (NO LOGIN required, recommended)
+      if (googleAppsScriptUrl) {
+        console.log("Submitting via Google Apps Script proxy...");
+        const response = await fetch("/api/submit-response", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            extractedData,
+            imageBase64: activeBase64,
+            imageMimeType: activeMimeType,
+            googleAppsScriptUrl: googleAppsScriptUrl.trim()
+          })
+        });
+
+        if (!response.ok) {
+          const errData = await response.json().catch(() => ({}));
+          throw new Error(errData.error || "Failed to submit response via Google Apps Script");
+        }
+
+        const resJson = await response.json();
+        console.log("Apps Script Submission successful:", resJson);
+
+        setSavedHistory([
+          {
+            timestamp: new Date().toLocaleTimeString(),
+            contactName: extractedData.contactName || "N/A",
+            company: extractedData.company || "N/A",
+            documentType: extractedData.documentType || "N/A",
+            sheetName: "Google Sheet (Apps Script Link)",
+          },
+          ...savedHistory,
+        ]);
+
+        setSaveSuccess(true);
+        setShowConfirmModal(false);
+        return;
+      }
+
+      // MODE 2: Direct browser Google Sheet integration (requires browser OAuth token)
+      if (!token) {
+        throw new Error("Google Apps Script URL is not configured, and you are not signed in as administrator. Please click 'Configure Sync' to set up a sheet connection.");
+      }
+
+      const selectedFile = spreadsheets.find((s) => s.id === selectedSpreadsheetId) || {
+        id: selectedSpreadsheetId,
+        name: selectedSpreadsheetId === "1RvuYa_xa1iF-z_iS0nQr3aFIeQiAZhvwLNCudex1KXw" ? "Google Form Linked Sheet" : "Custom Spreadsheet (" + selectedSpreadsheetId.slice(0, 8) + "...)"
+      };
       const sheetName = "Inquiries"; // Built-in sheet tab configured in utils
 
       await appendInquiryRow(token, selectedSpreadsheetId, sheetName, extractedData);
@@ -352,63 +478,17 @@ export default function App() {
       setShowConfirmModal(false);
     } catch (err: any) {
       console.error(err);
-      alert(`Failed to save to Google Sheets: ${err.message || "Unknown error"}`);
+      alert(`Submission failed: ${err.message || "Unknown error"}`);
     } finally {
       setIsSaving(false);
     }
   };
 
   // Find active spreadsheet object
-  const activeSpreadsheet = spreadsheets.find((s) => s.id === selectedSpreadsheetId);
-
-  // Authentication gate screen
-  if (needsAuth) {
-    return (
-      <div className="min-h-screen bg-[#f0ebf8] font-sans flex flex-col items-center justify-center p-6 text-slate-800">
-        <div className="w-full max-w-md bg-white rounded-xl shadow-md border border-slate-200/80 overflow-hidden text-center transition-all duration-300">
-          {/* Top accent bar like Google Forms */}
-          <div className="h-2.5 bg-[#673ab7] w-full" />
-          
-          <div className="p-8">
-            <div className="inline-flex items-center justify-center p-4 bg-[#f0ebf8] rounded-full text-[#673ab7] mb-6">
-              <Layers size={40} className="animate-pulse" />
-            </div>
-
-            <h1 className="text-2xl font-semibold tracking-tight text-slate-900 mb-2">
-              Inquiry Capture & Sync Form
-            </h1>
-            <p className="text-slate-500 text-sm mb-8 leading-relaxed">
-              OCR and Gemini AI document extraction utility. Capture photos or upload files to automatically populate rows in your Google Sheets.
-            </p>
-
-            <button
-              onClick={handleLogin}
-              disabled={isLoggingIn}
-              id="sign-in-btn"
-              className="w-full inline-flex items-center justify-center gap-3 py-2.5 px-5 border border-slate-300 rounded-lg bg-white hover:bg-slate-50 text-slate-700 font-medium text-sm transition-all shadow-xs focus:outline-none disabled:opacity-50 cursor-pointer"
-            >
-              {isLoggingIn ? (
-                <RefreshCw size={18} className="animate-spin text-slate-400" />
-              ) : (
-                <svg version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" className="w-5 h-5">
-                  <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"></path>
-                  <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"></path>
-                  <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"></path>
-                  <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"></path>
-                </svg>
-              )}
-              <span className="font-sans font-medium text-[#673ab7]">Sign in with Google Account</span>
-            </button>
-
-            <div className="mt-8 flex items-center justify-center gap-2 text-xs text-slate-400 border-t border-slate-100 pt-6">
-              <ShieldCheck size={14} className="text-[#673ab7]" />
-              <span>Workspace OAuth Verification Approved</span>
-            </div>
-          </div>
-        </div>
-      </div>
-    );
-  }
+  const activeSpreadsheet = spreadsheets.find((s) => s.id === selectedSpreadsheetId) || (selectedSpreadsheetId ? {
+    id: selectedSpreadsheetId,
+    name: selectedSpreadsheetId === "1RvuYa_xa1iF-z_iS0nQr3aFIeQiAZhvwLNCudex1KXw" ? "Google Form Linked Sheet" : "Custom Sheet ID: " + selectedSpreadsheetId.slice(0, 12) + "..."
+  } : null);
 
   // Dashboard / Form workspace
   return (
@@ -430,35 +510,27 @@ export default function App() {
             </div>
           </div>
 
-          {/* User profile & controls */}
+          {/* Connection Settings & Admin controls */}
           <div className="flex items-center gap-3">
-            <div className="flex flex-col items-end">
-              <span className="text-xs font-bold text-slate-800">
-                {user?.displayName}
+            {googleAppsScriptUrl ? (
+              <span className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-full">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                <span>Live Sync Active</span>
               </span>
-              <span className="text-[10px] text-slate-400 font-mono">
-                {user?.email}
-              </span>
-            </div>
-            {user?.photoURL ? (
-              <img
-                src={user.photoURL}
-                alt="Profile"
-                referrerPolicy="no-referrer"
-                className="w-8 h-8 rounded-full border border-slate-200"
-              />
             ) : (
-              <div className="w-8 h-8 bg-[#ede7f6] text-[#673ab7] flex items-center justify-center font-bold text-xs rounded-full">
-                {user?.displayName?.charAt(0) || "U"}
-              </div>
+              <span className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold bg-amber-50 text-amber-700 border border-amber-200 rounded-full">
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+                <span>Demo Mode (Unlinked)</span>
+              </span>
             )}
+
             <button
-              onClick={handleLogout}
-              id="logout-btn"
-              className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-all border border-transparent cursor-pointer"
-              title="Sign Out"
+              onClick={() => setIsSettingsOpen(true)}
+              id="settings-btn"
+              className="inline-flex items-center gap-2 py-1.5 px-3 border border-slate-200 rounded-lg bg-white hover:bg-[#f3f0f9] hover:text-[#673ab7] text-slate-700 font-semibold text-xs transition-all shadow-3xs cursor-pointer"
             >
-              <LogOut size={16} />
+              <Settings size={14} className="text-[#673ab7]" />
+              <span>Connection Settings</span>
             </button>
           </div>
         </div>
@@ -484,132 +556,23 @@ export default function App() {
               <div className="flex items-center gap-2">
                 <CheckCircle className="text-[#673ab7]" size={14} />
                 <span>
-                  Recording responses as <strong className="text-slate-700">{user?.email}</strong>
+                  Submitting responses securely directly to Google Sheet <strong>({selectedSpreadsheetId ? `${selectedSpreadsheetId.slice(0, 10)}...` : "Unlinked"})</strong>
                 </span>
               </div>
-              <span className="text-[10px] bg-amber-50 text-amber-800 border border-amber-100 px-2 py-0.5 rounded font-medium">
-                Required *
+              <span className="text-[10px] bg-indigo-50 text-indigo-800 border border-indigo-100 px-2 py-0.5 rounded font-medium">
+                No Sign-in Required
               </span>
             </div>
-          </div>
-        </section>
 
-        {/* Card 1: Google Spreadsheet Settings */}
-        <section className="bg-white rounded-lg border border-slate-200 shadow-xs p-6 space-y-4">
-          <div className="flex items-center justify-between border-b border-slate-100 pb-2">
-            <h2 className="text-sm font-bold text-slate-900 tracking-tight uppercase font-sans text-[#673ab7]">
-              Spreadsheet Destination Setup
-            </h2>
-            <button
-              onClick={() => token && fetchSpreadsheets(token)}
-              disabled={isLoadingSheets}
-              className="p-1 text-slate-400 hover:text-[#673ab7] hover:bg-[#f0ebf8] rounded-md transition-all cursor-pointer"
-              title="Refresh spreadsheet list"
-            >
-              <RefreshCw size={14} className={isLoadingSheets ? "animate-spin" : ""} />
-            </button>
-          </div>
-
-          {sheetsError && (
-            <div className="p-3 bg-rose-50 text-rose-700 border border-rose-100 rounded-lg text-xs flex items-start gap-2">
-              <AlertCircle size={14} className="shrink-0 mt-0.5" />
-              <span>{sheetsError}</span>
-            </div>
-          )}
-
-          <div className="space-y-4">
-            {/* Sheet select */}
-            <div className="space-y-1.5">
-              <label className="block text-sm font-semibold text-slate-700">
-                Choose Linked Google Sheet <span className="text-rose-500">*</span>
-              </label>
-              <p className="text-xs text-slate-400">
-                Select from spreadsheets inside your Google Drive. New rows will append to the "Inquiries" sheet tab.
-              </p>
-              {isLoadingSheets ? (
-                <div className="h-10 bg-slate-50 border-b border-slate-200 rounded-t-md flex items-center justify-center text-xs text-slate-400 animate-pulse font-mono">
-                  Loading files from Drive...
+            {!googleAppsScriptUrl && (
+              <div className="mt-4 p-4 bg-amber-50 border border-amber-200 rounded-lg text-left text-xs text-amber-800 space-y-2">
+                <div className="flex items-center gap-2 font-bold text-amber-900">
+                  <AlertCircle size={15} />
+                  <span>Google Sheet Connection Needed</span>
                 </div>
-              ) : spreadsheets.length === 0 ? (
-                <div className="p-3 bg-amber-50/50 text-amber-800 border border-amber-150 rounded-lg text-xs flex flex-col gap-1">
-                  <span className="font-bold">No spreadsheets found</span>
-                  <span>Use the quick generator below to bootstrap a spreadsheet instantly.</span>
-                </div>
-              ) : (
-                <div className="relative">
-                  <select
-                    value={selectedSpreadsheetId}
-                    onChange={(e) => {
-                      setSelectedSpreadsheetId(e.target.value);
-                      setSaveSuccess(false);
-                    }}
-                    id="spreadsheet-select"
-                    className="w-full bg-slate-50 border-b border-slate-300 focus:border-b-2 focus:border-[#673ab7] rounded-t-md px-3 py-2.5 text-sm font-medium text-slate-800 outline-none transition-all cursor-pointer"
-                  >
-                    {spreadsheets.map((sheet) => (
-                      <option key={sheet.id} value={sheet.id}>
-                        📁 {sheet.name} (Modified in Drive)
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              )}
-            </div>
-
-            {/* Quick Create option */}
-            <div className="bg-[#fcfaff] border border-slate-100 rounded-lg p-4 space-y-3">
-              <span className="text-[10px] font-bold text-[#673ab7] uppercase tracking-wider block">
-                Quick Spreadsheet Creator
-              </span>
-              <div className="flex flex-col sm:flex-row gap-2">
-                <input
-                  type="text"
-                  placeholder="Sheet Title (e.g. Inquiry Captures Log)"
-                  value={newSheetTitle}
-                  onChange={(e) => setNewSheetTitle(e.target.value)}
-                  id="new-sheet-title-input"
-                  className="flex-1 bg-white border-b border-slate-300 focus:border-b-2 focus:border-[#673ab7] rounded-t-md px-3 py-2 text-xs outline-none text-slate-800 transition-all font-medium"
-                />
-                <button
-                  onClick={handleCreateSheet}
-                  disabled={isCreatingSheet || !newSheetTitle.trim()}
-                  id="create-sheet-btn"
-                  className="bg-[#673ab7] hover:bg-[#5e35b1] disabled:opacity-50 text-white rounded-md px-4 py-2 text-xs font-bold inline-flex items-center gap-1.5 transition-all shadow-sm cursor-pointer"
-                >
-                  {isCreatingSheet ? (
-                    <RefreshCw size={12} className="animate-spin" />
-                  ) : (
-                    <Plus size={14} />
-                  )}
-                  <span>Generate Sheet</span>
-                </button>
-              </div>
-            </div>
-
-            {activeSpreadsheet && (
-              <div className="bg-emerald-50/60 border border-emerald-150 rounded-lg p-3 flex items-center justify-between gap-3">
-                <div className="flex items-center gap-2 overflow-hidden">
-                  <div className="p-1 bg-emerald-100 text-emerald-700 rounded-md">
-                    <CheckCircle size={14} />
-                  </div>
-                  <div className="overflow-hidden">
-                    <p className="text-xs font-bold text-slate-800 truncate">
-                      Connected: {activeSpreadsheet.name}
-                    </p>
-                    <p className="text-[10px] text-emerald-700 font-medium">
-                      Values will save instantly to spreadsheet column indexes.
-                    </p>
-                  </div>
-                </div>
-                <a
-                  href={`https://docs.google.com/spreadsheets/d/${selectedSpreadsheetId}/edit`}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="p-1.5 text-slate-400 hover:text-[#673ab7] hover:bg-white rounded-md transition-all shrink-0 cursor-pointer border border-transparent hover:border-slate-200"
-                  title="Open live spreadsheet"
-                >
-                  <ExternalLink size={14} />
-                </a>
+                <p className="leading-relaxed">
+                  This form is currently running in <strong>Demo/Offline Mode</strong>. Your submitters can capture images and extract text, but data won't persist to your Google Sheet until you paste your <strong>Google Apps Script Web App URL</strong>. Click <strong>Connection Settings</strong> at the top to configure your connection in 2 minutes!
+                </p>
               </div>
             )}
           </div>
@@ -1146,6 +1109,328 @@ export default function App() {
                   <span>Submit Response</span>
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Connection Settings Modal Drawer */}
+      {isSettingsOpen && (
+        <div className="fixed inset-0 z-50 flex justify-end p-0 bg-slate-900/60 backdrop-blur-xs">
+          <div className="w-full max-w-lg bg-white h-full flex flex-col shadow-2xl overflow-hidden animate-slide-in">
+            {/* Top violet accent */}
+            <div className="h-1.5 bg-[#673ab7] w-full" />
+
+            <div className="p-5 border-b border-slate-150 flex items-center justify-between">
+              <div className="flex items-center gap-2 text-slate-900">
+                <Settings className="text-[#673ab7]" size={20} />
+                <h2 className="text-base font-bold font-sans">
+                  Connection Settings (कनेक्शन सेटअप)
+                </h2>
+              </div>
+              <button
+                onClick={() => setIsSettingsOpen(false)}
+                className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition-all"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-6 space-y-6 font-sans">
+              
+              {/* Sheet Configuration Card */}
+              <div className="space-y-4">
+                <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">
+                  1. Target Spreadsheet Configuration
+                </h3>
+
+                <div className="space-y-2">
+                  <label className="block text-xs font-bold text-slate-700">
+                    Google Spreadsheet ID (गूगल शीट आईडी)
+                  </label>
+                  <input
+                    type="text"
+                    value={selectedSpreadsheetId}
+                    onChange={(e) => setSelectedSpreadsheetId(e.target.value)}
+                    placeholder="Enter your Spreadsheet ID"
+                    className="w-full bg-slate-50 border border-slate-200 focus:border-[#673ab7] focus:bg-white rounded-lg px-3 py-2 text-xs font-mono outline-none transition-all"
+                  />
+                  <div className="flex items-center justify-between text-[11px]">
+                    <span className="text-slate-500">Active sheet ID used to direct captures.</span>
+                    <a
+                      href={`https://docs.google.com/spreadsheets/d/${selectedSpreadsheetId}/edit`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-[#673ab7] hover:underline inline-flex items-center gap-1 font-bold"
+                    >
+                      <span>Open Sheet</span>
+                      <ExternalLink size={10} />
+                    </a>
+                  </div>
+                </div>
+              </div>
+
+              {/* Apps Script Configuration Card */}
+              <div className="space-y-4 pt-6 border-t border-slate-100">
+                <h3 className="text-xs font-bold text-[#673ab7] uppercase tracking-wider flex items-center gap-1.5">
+                  <Sparkles size={13} className="text-[#673ab7]" />
+                  <span>2. No-Login Sync (Google Apps Script)</span>
+                </h3>
+
+                <p className="text-xs text-slate-500 leading-relaxed">
+                  Pasting your deployed Google Apps Script URL enables <strong>everyone</strong> (submitters, customers, visitors) to upload photos and capture details without requiring any login screen!
+                </p>
+
+                <div className="space-y-2">
+                  <label className="block text-xs font-bold text-slate-700">
+                    Deployed Web App URL (वेब ऐप यूआरएल)
+                  </label>
+                  <input
+                    type="text"
+                    value={googleAppsScriptUrl}
+                    onChange={(e) => setGoogleAppsScriptUrl(e.target.value)}
+                    placeholder="https://script.google.com/macros/s/.../exec"
+                    className="w-full bg-slate-50 border border-slate-200 focus:border-[#673ab7] focus:bg-white rounded-lg px-3 py-2 text-xs font-mono outline-none transition-all"
+                  />
+                </div>
+
+                {/* Save action feedback */}
+                {settingsSaveError && (
+                  <div className="p-3 bg-rose-50 text-rose-700 text-xs rounded-lg border border-rose-100 flex items-center gap-1.5">
+                    <AlertCircle size={14} />
+                    <span>{settingsSaveError}</span>
+                  </div>
+                )}
+
+                {settingsSaveSuccess && (
+                  <div className="p-3 bg-emerald-50 text-emerald-800 text-xs rounded-lg border border-emerald-100 flex items-center gap-1.5">
+                    <CheckCircle size={14} />
+                    <span>Settings saved successfully! (सेटिंग्स सेव हो गई हैं!)</span>
+                  </div>
+                )}
+
+                <button
+                  onClick={handleSaveSettings}
+                  disabled={isSavingSettings}
+                  className="w-full bg-[#673ab7] hover:bg-[#5e35b1] disabled:opacity-50 text-white rounded-lg py-2 text-xs font-bold transition-all shadow-sm flex items-center justify-center gap-2"
+                >
+                  {isSavingSettings ? (
+                    <RefreshCw size={14} className="animate-spin" />
+                  ) : (
+                    <Check size={14} />
+                  )}
+                  <span>Save Connection Settings (कनेक्शन सेव करें)</span>
+                </button>
+              </div>
+
+              {/* Step-by-Step Setup Wizard */}
+              <div className="space-y-4 pt-6 border-t border-slate-100">
+                <div className="flex items-center gap-1.5 text-slate-800">
+                  <HelpCircle size={15} className="text-[#673ab7]" />
+                  <h4 className="text-xs font-bold uppercase tracking-wider">
+                    How to Set Up (सेटअप कैसे करें?)
+                  </h4>
+                </div>
+
+                <ol className="text-xs text-slate-600 space-y-3 pl-4 list-decimal leading-relaxed">
+                  <li>
+                    <strong>Copy Script:</strong> Click the button below to copy the custom automation script.
+                    <br />
+                    <span className="text-[10px] text-slate-400 font-medium">नीचे दिए बटन को दबाकर स्क्रिप्ट कोड कॉपी करें।</span>
+                  </li>
+                  <li>
+                    <strong>Open Apps Script:</strong> Open your Google Sheet, click on <strong>Extensions (एक्सटेंशन)</strong> &rarr; <strong>Apps Script</strong> from the top menu.
+                    <br />
+                    <span className="text-[10px] text-slate-400 font-medium">गूगल शीट खोलें, Extensions मेनू में Apps Script पर क्लिक करें।</span>
+                  </li>
+                  <li>
+                    <strong>Paste Code:</strong> Delete any code in the editor, paste the copied script, and save (Ctrl+S / Cmd+S).
+                    <br />
+                    <span className="text-[10px] text-slate-400 font-medium">पहले से मौजूद कोड को मिटाकर कॉपी किया कोड पेस्ट करें और सेव करें।</span>
+                  </li>
+                  <li>
+                    <strong>Deploy:</strong> Click <strong>Deploy</strong> &rarr; <strong>New deployment</strong>.
+                    <br />
+                    <span className="text-[10px] text-slate-400 font-medium">Deploy बटन दबाकर New deployment चुनें।</span>
+                  </li>
+                  <li>
+                    <strong>Configure Type:</strong> Click the Gear icon next to "Select type" and choose <strong>Web app</strong>.
+                    <br />
+                    <span className="text-[10px] text-slate-400 font-medium">गियर आइकॉन दबाकर Web app प्रकार चुनें।</span>
+                  </li>
+                  <li>
+                    <strong>Set Permissions (CRITICAL):</strong>
+                    <ul className="list-disc pl-4 mt-1 text-slate-500 space-y-0.5">
+                      <li>Execute as (इस रूप में चलाएं): <strong>Me (your-email@gmail.com)</strong></li>
+                      <li>Who has access (किसके पास पहुंच है): <strong>Anyone (कोई भी)</strong></li>
+                    </ul>
+                  </li>
+                  <li>
+                    <strong>Submit:</strong> Click <strong>Deploy</strong>, authorize permissions when prompted, copy the generated <strong>Web App URL</strong>, paste it in the field above, and click <strong>Save Connection</strong>!
+                    <br />
+                    <span className="text-[10px] text-slate-400 font-medium">Deploy पर क्लिक करके अनुमतियों को स्वीकारें, URL कॉपी करके ऊपर पेस्ट करें और सेव करें!</span>
+                  </li>
+                </ol>
+
+                {/* Copy Script Container */}
+                <div className="bg-[#fcfaff] border border-[#f0ebf8] rounded-xl p-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] font-bold text-[#673ab7] uppercase tracking-wider">
+                      Google Apps Script Template
+                    </span>
+                    <button
+                      onClick={() => {
+                        const template = `// ====== COPY THIS SCRIPT TO YOUR GOOGLE SHEET ======
+function doPost(e) {
+  try {
+    var data = JSON.parse(e.postData.contents);
+    
+    // Target Spreadsheet ID
+    var spreadsheetId = "${selectedSpreadsheetId || '1RvuYa_xa1iF-z_iS0nQr3aFIeQiAZhvwLNCudex1KXw'}";
+    var ss = SpreadsheetApp.openById(spreadsheetId);
+    
+    // Get or create the "Inquiries" sheet tab
+    var sheet = ss.getSheetByName("Inquiries");
+    if (!sheet) {
+      sheet = ss.insertSheet("Inquiries");
+    }
+    
+    // Create header row if sheet is empty
+    if (sheet.getLastRow() === 0) {
+      sheet.appendRow([
+        "Timestamp",
+        "Contact Name",
+        "Company",
+        "Email",
+        "Phone",
+        "Inquiry Summary",
+        "Estimated Budget",
+        "Document Type",
+        "Raw OCR Text",
+        "Photo Preview"
+      ]);
+      // Format headers with beautiful purple style matching Google Forms
+      sheet.getRange(1, 1, 1, 10)
+        .setFontWeight("bold")
+        .setBackground("#ede7f6")
+        .setFontColor("#673ab7");
+    }
+    
+    var timestamp = new Date().toLocaleString();
+    
+    // Format photo cell with =IMAGE() so Google Sheet renders the image inside the cell!
+    var photoCell = data.photoUrl ? '=IMAGE("' + data.photoUrl + '")' : "No Photo";
+    
+    // Append the row
+    sheet.appendRow([
+      timestamp,
+      data.contactName || "N/A",
+      data.company || "N/A",
+      data.email || "N/A",
+      data.phone || "N/A",
+      data.inquiryDetails || "N/A",
+      data.estimatedBudget || "N/A",
+      data.documentType || "N/A",
+      data.ocrText || "N/A",
+      photoCell
+    ]);
+    
+    // Set row height to 80px so the photo is clearly visible in the sheet!
+    var lastRow = sheet.getLastRow();
+    if (lastRow > 1) {
+      sheet.setRowHeight(lastRow, 80);
+    }
+    
+    return ContentService.createTextOutput(JSON.stringify({ status: "success", row: lastRow }))
+      .setMimeType(ContentService.MimeType.JSON);
+  } catch (error) {
+    return ContentService.createTextOutput(JSON.stringify({ status: "error", message: error.toString() }))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+}`;
+                        navigator.clipboard.writeText(template);
+                        setCopied(true);
+                        setTimeout(() => setCopied(false), 2000);
+                      }}
+                      className="inline-flex items-center gap-1.5 px-3 py-1 bg-white hover:bg-[#ede7f6] hover:text-[#673ab7] text-slate-700 rounded-md border border-slate-200 text-[11px] font-bold transition-all cursor-pointer shadow-3xs"
+                    >
+                      {copied ? (
+                        <>
+                          <Check size={12} className="text-emerald-600" />
+                          <span className="text-emerald-600">Copied!</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy size={12} />
+                          <span>Copy Script Code</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                  <pre className="text-[10px] bg-slate-900 text-slate-100 rounded-lg p-3 font-mono overflow-x-auto max-h-[180px] leading-relaxed">
+{`function doPost(e) {
+  try {
+    var data = JSON.parse(e.postData.contents);
+    var spreadsheetId = "${selectedSpreadsheetId || '1RvuYa_xa1iF-z_iS0nQr3aFIeQiAZhvwLNCudex1KXw'}";
+    var ss = SpreadsheetApp.openById(spreadsheetId);
+    var sheet = ss.getSheetByName("Inquiries") || ss.getSheets()[0];
+    
+    // [Formatting headers, appending data, and IMAGE() embedding logic]
+    // ...
+  }
+}`}
+                  </pre>
+                </div>
+              </div>
+
+              {/* Backwards Compatibility Direct API Authentication Option */}
+              <div className="space-y-4 pt-6 border-t border-slate-100">
+                <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">
+                  Alternative: Direct Admin Google Auth
+                </h3>
+                <p className="text-[11px] text-slate-400 leading-relaxed">
+                  If you prefer to submit direct client-side requests from this browser session using your current login, you may sign in with Google below. (Submitters will still be prompted to login in this mode).
+                </p>
+
+                {user ? (
+                  <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 flex items-center justify-between text-xs">
+                    <div className="flex items-center gap-2">
+                      <div className="w-6 h-6 bg-[#673ab7] text-white flex items-center justify-center rounded-full font-bold text-[10px]">
+                        {user.displayName?.charAt(0) || "A"}
+                      </div>
+                      <div>
+                        <p className="font-bold text-slate-800">{user.displayName}</p>
+                        <p className="text-[10px] text-slate-400 font-mono">{user.email}</p>
+                      </div>
+                    </div>
+                    <button
+                      onClick={handleLogout}
+                      className="px-2.5 py-1 text-xs font-bold text-rose-600 hover:bg-rose-50 rounded border border-transparent hover:border-rose-200"
+                    >
+                      Sign Out
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    onClick={handleLogin}
+                    disabled={isLoggingIn}
+                    className="w-full inline-flex items-center justify-center gap-2.5 py-2 px-4 border border-slate-300 rounded-lg bg-white hover:bg-slate-50 text-slate-700 font-medium text-xs transition-all shadow-3xs cursor-pointer"
+                  >
+                    {isLoggingIn ? (
+                      <RefreshCw size={12} className="animate-spin text-slate-400" />
+                    ) : (
+                      <svg version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" className="w-4 h-4">
+                        <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"></path>
+                        <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"></path>
+                        <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"></path>
+                        <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"></path>
+                      </svg>
+                    )}
+                    <span className="font-bold text-[#673ab7]">Sign in with Google Account</span>
+                  </button>
+                )}
+              </div>
+
             </div>
           </div>
         </div>
