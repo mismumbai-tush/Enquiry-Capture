@@ -68,21 +68,43 @@ export default function App() {
   const [isLoadingSheets, setIsLoadingSheets] = useState(false);
   const [sheetsError, setSheetsError] = useState<string | null>(null);
 
-  // Capture mode state
+  // Tab state (Customer Details vs Visiting Card Photo scan)
+  const [activeTab, setActiveTab] = useState<"details" | "photo">("details");
+
+  // Visiting card / main card photo capture mode state
   const [captureMode, setCaptureMode] = useState<"camera" | "upload">("camera");
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [activeMimeType, setActiveMimeType] = useState<string>("");
   const [activeBase64, setActiveBase64] = useState<string>("");
 
-  // Camera stream state
+  // Visiting card camera stream state
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [cameraStream, setCameraStream] = useState<MediaStream | null>(null);
   const [cameraError, setCameraError] = useState<string | null>(null);
 
-  // OCR state
+  // Multiple Enquiry Photo attachments states
+  const [attachedPhotos, setAttachedPhotos] = useState<Array<{ base64: string; mimeType: string; previewUrl: string }>>([]);
+  const [showAttachmentSelector, setShowAttachmentSelector] = useState(false);
+  const [attachmentCaptureMode, setAttachmentCaptureMode] = useState<"camera" | "upload">("upload");
+  const [attachmentCameraStream, setAttachmentCameraStream] = useState<MediaStream | null>(null);
+  const [attachmentCameraError, setAttachmentCameraError] = useState<string | null>(null);
+
+  // OCR and Form states
   const [isExtracting, setIsExtracting] = useState(false);
   const [ocrError, setOcrError] = useState<string | null>(null);
-  const [extractedData, setExtractedData] = useState<InquiryData | null>(null);
+  const [ocrSuccessMsg, setOcrSuccessMsg] = useState<string | null>(null);
+  
+  // Initialized form state so it can be manually filled or auto-filled via OCR immediately!
+  const [extractedData, setExtractedData] = useState<InquiryData>({
+    contactName: "",
+    company: "",
+    email: "",
+    phone: "",
+    inquiryDetails: "",
+    estimatedBudget: "",
+    documentType: "business_card",
+    ocrText: "",
+  });
 
   // Save/Confirm states
   const [isSaving, setIsSaving] = useState(false);
@@ -128,7 +150,7 @@ export default function App() {
     fetchSettings();
   }, []);
 
-  // Save settings handler (सेटिंग्स सेव करने का हैंडलर)
+  // Save settings handler
   const handleSaveSettings = async () => {
     setIsSavingSettings(true);
     setSettingsSaveError(null);
@@ -165,7 +187,6 @@ export default function App() {
       (currentUser, accessToken) => {
         setUser(currentUser);
         setToken(accessToken);
-        // Do not force needsAuth = true or block layout
         fetchSpreadsheets(accessToken);
       },
       () => {
@@ -176,6 +197,7 @@ export default function App() {
     return () => {
       unsubscribe();
       stopCamera();
+      stopAttachmentCamera();
     };
   }, []);
 
@@ -186,7 +208,6 @@ export default function App() {
     try {
       const files = await listSpreadsheets(accessToken);
       setSpreadsheets(files);
-      // Only overwrite selectedSpreadsheetId if it's currently empty
       if (files.length > 0 && !selectedSpreadsheetId) {
         setSelectedSpreadsheetId(files[0].id);
       }
@@ -228,6 +249,7 @@ export default function App() {
   // 4. Logout user
   const handleLogout = async () => {
     stopCamera();
+    stopAttachmentCamera();
     await logout();
     setUser(null);
     setToken(null);
@@ -235,7 +257,7 @@ export default function App() {
     setSpreadsheets([]);
     setSelectedSpreadsheetId("");
     setPreviewUrl(null);
-    setExtractedData(null);
+    handleClearForm();
     setSaveSuccess(false);
   };
 
@@ -247,7 +269,6 @@ export default function App() {
     try {
       const sheetTitle = newSheetTitle.trim() || "Inquiry Captures Log";
       const result = await createSpreadsheet(token, sheetTitle);
-      // Re-fetch spreadsheet list
       await fetchSpreadsheets(token);
       setSelectedSpreadsheetId(result.id);
     } catch (err: any) {
@@ -257,7 +278,7 @@ export default function App() {
     }
   };
 
-  // 6. Camera handlers
+  // 6. Main Visiting Card Camera handlers
   const startCamera = async () => {
     setCameraError(null);
     try {
@@ -293,16 +314,16 @@ export default function App() {
     }
   };
 
+  // Sync main camera feed with active tabs and modes
   useEffect(() => {
-    if (captureMode === "camera") {
+    if (activeTab === "photo" && captureMode === "camera") {
       startCamera();
     } else {
       stopCamera();
     }
     return () => stopCamera();
-  }, [captureMode]);
+  }, [captureMode, activeTab]);
 
-  // Callback ref to bind stream immediately when the video element mounts, preventing race conditions
   const setVideoRef = useCallback((node: HTMLVideoElement | null) => {
     videoRef.current = node;
     if (node && cameraStream) {
@@ -310,12 +331,10 @@ export default function App() {
     }
   }, [cameraStream]);
 
-  // Capture current video frame
   const handleCapture = () => {
     if (videoRef.current) {
       const video = videoRef.current;
       const canvas = document.createElement("canvas");
-      // Match high quality video feed size or standard fallback
       canvas.width = video.videoWidth || 1280;
       canvas.height = video.videoHeight || 720;
       const ctx = canvas.getContext("2d");
@@ -324,14 +343,92 @@ export default function App() {
         const dataUrl = canvas.toDataURL("image/jpeg");
         setPreviewUrl(dataUrl);
         setActiveMimeType("image/jpeg");
-        setActiveBase64(dataUrl.split(",")[1]);
-        // Auto extract details right after capture
-        triggerOcr(dataUrl.split(",")[1], "image/jpeg");
+        const base64Str = dataUrl.split(",")[1];
+        setActiveBase64(base64Str);
+        triggerOcr(base64Str, "image/jpeg");
       }
     }
   };
 
-  // 7. File upload handlers
+  // 7. Enquiry Photo Attachment camera handlers
+  const attachmentVideoRef = useRef<HTMLVideoElement | null>(null);
+
+  const startAttachmentCamera = async () => {
+    setAttachmentCameraError(null);
+    try {
+      if (attachmentCameraStream) {
+        attachmentCameraStream.getTracks().forEach((track) => track.stop());
+      }
+      let stream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: "environment" },
+          audio: false,
+        });
+      } catch (err) {
+        console.warn("Could not access environment camera for attachment, trying any:", err);
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: true,
+          audio: false,
+        });
+      }
+      setAttachmentCameraStream(stream);
+    } catch (err: any) {
+      console.error("Attachment camera error:", err);
+      setAttachmentCameraError(
+        "Could not access your device camera. Please check your permissions or upload image files instead."
+      );
+    }
+  };
+
+  const stopAttachmentCamera = () => {
+    if (attachmentCameraStream) {
+      attachmentCameraStream.getTracks().forEach((track) => track.stop());
+      setAttachmentCameraStream(null);
+    }
+  };
+
+  useEffect(() => {
+    if (showAttachmentSelector && attachmentCaptureMode === "camera") {
+      startAttachmentCamera();
+    } else {
+      stopAttachmentCamera();
+    }
+    return () => stopAttachmentCamera();
+  }, [showAttachmentSelector, attachmentCaptureMode]);
+
+  const setAttachmentVideoRef = useCallback((node: HTMLVideoElement | null) => {
+    attachmentVideoRef.current = node;
+    if (node && attachmentCameraStream) {
+      node.srcObject = attachmentCameraStream;
+    }
+  }, [attachmentCameraStream]);
+
+  const handleCaptureAttachment = () => {
+    if (attachmentVideoRef.current) {
+      const video = attachmentVideoRef.current;
+      const canvas = document.createElement("canvas");
+      canvas.width = video.videoWidth || 1280;
+      canvas.height = video.videoHeight || 720;
+      const ctx = canvas.getContext("2d");
+      if (ctx) {
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const dataUrl = canvas.toDataURL("image/jpeg");
+        const base64Str = dataUrl.split(",")[1];
+        setAttachedPhotos((prev) => [
+          ...prev,
+          {
+            base64: base64Str,
+            mimeType: "image/jpeg",
+            previewUrl: dataUrl,
+          },
+        ]);
+        setShowAttachmentSelector(false);
+      }
+    }
+  };
+
+  // Manual file upload handler for visiting card
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -350,13 +447,12 @@ export default function App() {
       setActiveMimeType(file.type);
       const base64Str = dataUrl.split(",")[1];
       setActiveBase64(base64Str);
-      // Auto extract
       triggerOcr(base64Str, file.type);
     };
     reader.readAsDataURL(file);
   };
 
-  // Drag & drop handlers
+  // Drag and drop handlers
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
     setIsDragging(true);
@@ -375,11 +471,45 @@ export default function App() {
     }
   };
 
+  // Multiple files selector for Enquiry Photos
+  const handleAttachmentFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+    
+    (Array.from(files) as File[]).forEach((file) => {
+      if (!file.type.startsWith("image/")) {
+        alert("Please upload image files only (PNG, JPEG, WebP).");
+        return;
+      }
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        const dataUrl = reader.result as string;
+        const base64Str = dataUrl.split(",")[1];
+        setAttachedPhotos((prev) => [
+          ...prev,
+          {
+            base64: base64Str,
+            mimeType: file.type,
+            previewUrl: dataUrl,
+          },
+        ]);
+      };
+      reader.readAsDataURL(file);
+    });
+    
+    e.target.value = "";
+    setShowAttachmentSelector(false);
+  };
+
+  const handleRemoveAttachmentPhoto = (indexToRemove: number) => {
+    setAttachedPhotos((prev) => prev.filter((_, idx) => idx !== indexToRemove));
+  };
+
   // 8. OCR extract request to server
   const triggerOcr = async (base64Str: string, mimeTypeStr: string) => {
     setIsExtracting(true);
     setOcrError(null);
-    setExtractedData(null);
+    setOcrSuccessMsg(null);
     setSaveSuccess(false);
 
     try {
@@ -400,7 +530,22 @@ export default function App() {
       }
 
       const result: InquiryData = await response.json();
-      setExtractedData(result);
+      
+      // Update form values with extracted details, keeping user-entered InquiryDetails/Budget intact!
+      setExtractedData((prev) => ({
+        ...prev,
+        contactName: result.contactName || prev.contactName,
+        company: result.company || prev.company,
+        email: result.email || prev.email,
+        phone: result.phone || prev.phone,
+        documentType: result.documentType || "business_card",
+        ocrText: result.ocrText || prev.ocrText,
+      }));
+
+      // Switch active input tab to manual details so they can verify/edit the populated fields
+      setActiveTab("details");
+      setOcrSuccessMsg("Details scanned and extracted successfully! Please verify below.");
+      setTimeout(() => setOcrSuccessMsg(null), 8000);
     } catch (err: any) {
       console.error(err);
       setOcrError(err.message || "Failed to analyze document. Please try a clearer image.");
@@ -411,17 +556,15 @@ export default function App() {
 
   // 9. Form inputs modifier
   const handleFieldChange = (field: keyof InquiryData, value: string) => {
-    if (extractedData) {
-      setExtractedData({
-        ...extractedData,
-        [field]: value,
-      });
-    }
+    setExtractedData((prev) => ({
+      ...prev,
+      [field]: value,
+    }));
   };
 
-  // 10. Write to Spreadsheet
+  // 10. Write responses to Google Spreadsheet
   const handleConfirmSave = async () => {
-    if (!selectedSpreadsheetId || !extractedData) {
+    if (!selectedSpreadsheetId) {
       alert("Please select or paste a Google Sheet ID in the Connection Settings.");
       return;
     }
@@ -429,6 +572,45 @@ export default function App() {
     setSaveSuccess(false);
 
     try {
+      // Step 1: Upload photos to get public image URLs first (for both sync modes)
+      let finalVisitingCardUrl = "";
+      let finalInquiryPhotoUrls = "";
+
+      const uploadPayload = {
+        imageBase64: activeBase64,
+        imageMimeType: activeMimeType,
+        attachedPhotos: attachedPhotos.map((p) => ({ base64: p.base64, mimeType: p.mimeType })),
+      };
+
+      if (activeBase64 || attachedPhotos.length > 0) {
+        try {
+          const uploadRes = await fetch("/api/upload", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify(uploadPayload),
+          });
+
+          if (uploadRes.ok) {
+            const uploadData = await uploadRes.json();
+            finalVisitingCardUrl = uploadData.photoUrl || "";
+            finalInquiryPhotoUrls = uploadData.inquiryPhotoUrls || "";
+          } else {
+            console.error("Endpoint image upload failed, submitting with base64 only");
+          }
+        } catch (uploadErr) {
+          console.error("Failed to connect with photo upload helper:", uploadErr);
+        }
+      }
+
+      // Build complete InquiryData row payload
+      const submissionPayload: InquiryData = {
+        ...extractedData,
+        visitingCardPhotoUrl: finalVisitingCardUrl,
+        inquiryPhotoUrls: finalInquiryPhotoUrls,
+      };
+
       // MODE 1: Google Apps Script Web App (NO LOGIN required, recommended)
       if (googleAppsScriptUrl) {
         console.log("Submitting via Google Apps Script proxy...");
@@ -438,11 +620,12 @@ export default function App() {
             "Content-Type": "application/json",
           },
           body: JSON.stringify({
-            extractedData,
+            extractedData: submissionPayload,
             imageBase64: activeBase64,
             imageMimeType: activeMimeType,
-            googleAppsScriptUrl: googleAppsScriptUrl.trim()
-          })
+            attachedPhotos: attachedPhotos.map((p) => ({ base64: p.base64, mimeType: p.mimeType })),
+            googleAppsScriptUrl: googleAppsScriptUrl.trim(),
+          }),
         });
 
         if (!response.ok) {
@@ -456,9 +639,9 @@ export default function App() {
         setSavedHistory([
           {
             timestamp: new Date().toLocaleTimeString(),
-            contactName: extractedData.contactName || "N/A",
-            company: extractedData.company || "N/A",
-            documentType: extractedData.documentType || "N/A",
+            contactName: submissionPayload.contactName || "N/A",
+            company: submissionPayload.company || "N/A",
+            documentType: submissionPayload.documentType || "N/A",
             sheetName: "Google Sheet (Apps Script Link)",
           },
           ...savedHistory,
@@ -466,6 +649,8 @@ export default function App() {
 
         setSaveSuccess(true);
         setShowConfirmModal(false);
+        handleClearForm();
+        window.scrollTo({ top: 0, behavior: "smooth" });
         return;
       }
 
@@ -476,19 +661,18 @@ export default function App() {
 
       const selectedFile = spreadsheets.find((s) => s.id === selectedSpreadsheetId) || {
         id: selectedSpreadsheetId,
-        name: selectedSpreadsheetId === "1RvuYa_xa1iF-z_iS0nQr3aFIeQiAZhvwLNCudex1KXw" ? "Google Form Linked Sheet" : "Custom Spreadsheet (" + selectedSpreadsheetId.slice(0, 8) + "...)"
+        name: selectedSpreadsheetId === "1RvuYa_xa1iF-z_iS0nQr3aFIeQiAZhvwLNCudex1KXw" ? "Google Form Linked Sheet" : "Custom Spreadsheet (" + selectedSpreadsheetId.slice(0, 8) + "...)",
       };
       const sheetName = "Inquiries"; // Built-in sheet tab configured in utils
 
-      await appendInquiryRow(token, selectedSpreadsheetId, sheetName, extractedData);
+      await appendInquiryRow(token, selectedSpreadsheetId, sheetName, submissionPayload);
 
-      // Save to local session log
       setSavedHistory([
         {
           timestamp: new Date().toLocaleTimeString(),
-          contactName: extractedData.contactName || "N/A",
-          company: extractedData.company || "N/A",
-          documentType: extractedData.documentType || "N/A",
+          contactName: submissionPayload.contactName || "N/A",
+          company: submissionPayload.company || "N/A",
+          documentType: submissionPayload.documentType || "N/A",
           sheetName: selectedFile?.name || "Sheet",
         },
         ...savedHistory,
@@ -496,12 +680,32 @@ export default function App() {
 
       setSaveSuccess(true);
       setShowConfirmModal(false);
+      handleClearForm();
+      window.scrollTo({ top: 0, behavior: "smooth" });
     } catch (err: any) {
       console.error(err);
       alert(`Submission failed: ${err.message || "Unknown error"}`);
     } finally {
       setIsSaving(false);
     }
+  };
+
+  const handleClearForm = () => {
+    setExtractedData({
+      contactName: "",
+      company: "",
+      email: "",
+      phone: "",
+      inquiryDetails: "",
+      estimatedBudget: "",
+      documentType: "business_card",
+      ocrText: "",
+    });
+    setPreviewUrl(null);
+    setActiveBase64("");
+    setActiveMimeType("");
+    setAttachedPhotos([]);
+    setShowAttachmentSelector(false);
   };
 
   // Find active spreadsheet object
@@ -529,6 +733,14 @@ export default function App() {
               </p>
             </div>
           </div>
+          {/* Settings configuration shortcut */}
+          <button
+            onClick={() => setIsSettingsOpen(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 hover:bg-[#ede7f6] hover:text-[#673ab7] text-slate-600 rounded-lg text-xs font-semibold border border-slate-200 transition-all cursor-pointer bg-white shadow-3xs"
+          >
+            <Settings size={14} className="text-[#673ab7]" />
+            <span>Configure Sync</span>
+          </button>
         </div>
       </header>
 
@@ -541,14 +753,18 @@ export default function App() {
           <div className="h-[10px] bg-[#673ab7] w-full" />
           
           <div className="p-6 md:p-8 space-y-4">
-            <h1 className="text-3xl text-slate-900 font-normal font-sans tracking-tight">
-              Inquiry Capture & OCR Sync Form
-            </h1>
-            <p className="text-sm text-slate-700 leading-relaxed font-sans">
-              Welcome to the unified digital inquiry desk. Take a snapshot of hand-written notes, invoices, receipts, or business cards. Our background Gemini system extracts the customer profile details automatically and queues them directly as structured entries inside your linked Google Spreadsheet.
-            </p>
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-100 pb-4">
+              <h1 className="text-3xl text-slate-900 font-normal font-sans tracking-tight">
+                Inquiry Capture & OCR Sync Form
+              </h1>
+              <img
+                src="https://www.ginzalimited.com/cdn/shop/files/Ginza_logo.jpg?v=1668509673&width=500"
+                alt="GINZA Logo"
+                className="h-12 w-auto object-contain rounded"
+              />
+            </div>
             
-            <div className="border-t border-slate-150 pt-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-slate-500 bg-[#fbfaff] p-3.5 rounded-lg border border-indigo-100/40">
+            <div className="pt-2 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-slate-500 bg-[#fbfaff] p-3.5 rounded-lg border border-indigo-100/40">
               <div className="flex items-center gap-2">
                 <CheckCircle className="text-[#673ab7]" size={14} />
                 <span className="font-medium text-slate-600">
@@ -562,397 +778,460 @@ export default function App() {
           </div>
         </section>
 
-        {/* Card 2: Interactive Camera & File Loader */}
-        <section className="bg-white rounded-lg border border-slate-200 shadow-xs p-6 space-y-4">
-          <div className="flex items-center justify-between border-b border-slate-100 pb-2">
-            <h2 className="text-sm font-bold text-slate-900 tracking-tight uppercase font-sans text-[#673ab7]">
-              Inquiry Photo Source
-            </h2>
+        {/* Card 2: Combined Customer Details and Visiting Card Scanner */}
+        <section className="bg-white rounded-lg border border-slate-200 shadow-xs overflow-hidden relative">
+          {/* Left colored bar */}
+          <div className="absolute left-0 top-0 bottom-0 w-1 bg-[#673ab7]" />
+
+          <div className="p-6 md:p-8 space-y-6">
             
-            <div className="flex bg-slate-100 p-0.5 rounded-lg border border-slate-200/80">
-              <button
-                onClick={() => {
-                  setCaptureMode("camera");
-                  setPreviewUrl(null);
-                }}
-                className={`px-3 py-1 text-xs font-bold rounded-md transition-all cursor-pointer ${
-                  captureMode === "camera"
-                    ? "bg-white text-slate-800 shadow-xs"
-                    : "text-slate-400 hover:text-slate-600"
-                }`}
-              >
-                Use Camera
-              </button>
-              <button
-                onClick={() => {
-                  setCaptureMode("upload");
-                  setPreviewUrl(null);
-                  stopCamera();
-                }}
-                className={`px-3 py-1 text-xs font-bold rounded-md transition-all cursor-pointer ${
-                  captureMode === "upload"
-                    ? "bg-white text-slate-800 shadow-xs"
-                    : "text-slate-400 hover:text-slate-600"
-                }`}
-              >
-                Upload File
-              </button>
-            </div>
-          </div>
-
-          <p className="text-xs text-slate-500">
-            Submit an image to populate form questions automatically. Position business cards, documents, or written requests clearly within frame.
-          </p>
-
-          {/* Camera Input Stream */}
-          {captureMode === "camera" && (
+            {/* Header and segmented tabs */}
             <div className="space-y-4">
-              {cameraError ? (
-                <div className="p-4 bg-amber-50 text-amber-800 border border-amber-100 rounded-lg text-xs space-y-2">
-                  <p className="font-semibold">Camera Connection Offline</p>
-                  <p>{cameraError}</p>
-                  <button
-                    onClick={startCamera}
-                    className="text-xs font-bold text-amber-900 underline hover:text-amber-950 cursor-pointer"
-                  >
-                    Reinitialize Camera
-                  </button>
+              <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                <h3 className="text-sm font-bold text-[#673ab7] uppercase tracking-wide">
+                  Customer Details & Photo Option
+                </h3>
+              </div>
+
+              {/* Segmented option tabs */}
+              <div className="grid grid-cols-2 gap-2 bg-slate-50 p-1 rounded-lg border border-slate-200">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveTab("details");
+                    stopCamera();
+                  }}
+                  className={`py-2 text-xs font-bold rounded-md transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
+                    activeTab === "details"
+                      ? "bg-white text-[#673ab7] shadow-xs border border-slate-100"
+                      : "text-slate-500 hover:text-slate-700"
+                  }`}
+                >
+                  <User size={14} />
+                  <span>Customer Details</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveTab("photo");
+                  }}
+                  className={`py-2 text-xs font-bold rounded-md transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
+                    activeTab === "photo"
+                      ? "bg-white text-[#673ab7] shadow-xs border border-slate-100"
+                      : "text-slate-500 hover:text-slate-700"
+                  }`}
+                >
+                  <Camera size={14} />
+                  <span>Photo / visiting card</span>
+                </button>
+              </div>
+
+              {/* Scan feedbacks */}
+              {ocrSuccessMsg && (
+                <div className="p-3 bg-emerald-50 text-emerald-800 border border-emerald-100 rounded-lg text-xs flex items-center gap-2 animate-fade-in">
+                  <CheckCircle size={14} className="text-emerald-600 shrink-0" />
+                  <span className="font-semibold">{ocrSuccessMsg}</span>
                 </div>
-              ) : (
-                <div className="relative aspect-video w-full rounded-lg overflow-hidden bg-slate-950 border border-slate-800">
-                  {cameraStream ? (
-                    <>
-                      <video
-                        ref={setVideoRef}
-                        autoPlay
-                        playsInline
-                        className="w-full h-full object-cover"
+              )}
+
+              {ocrError && (
+                <div className="p-3 bg-rose-50 text-rose-700 border border-rose-100 rounded-lg text-xs space-y-1">
+                  <div className="flex items-center gap-1.5 font-semibold">
+                    <AlertCircle size={14} className="text-rose-600 shrink-0" />
+                    <span>OCR Scan Alert</span>
+                  </div>
+                  <p className="text-[11px] leading-relaxed">{ocrError}</p>
+                </div>
+              )}
+
+              {isExtracting && (
+                <div className="py-6 text-center space-y-2 border border-slate-100 rounded-lg bg-slate-50">
+                  <div className="relative flex items-center justify-center">
+                    <div className="w-8 h-8 border-3 border-slate-100 border-t-[#673ab7] rounded-full animate-spin" />
+                    <Sparkles className="absolute text-[#673ab7] animate-pulse" size={12} />
+                  </div>
+                  <div>
+                    <h4 className="text-xs font-bold text-slate-800">Analyzing card details using Gemini AI...</h4>
+                    <p className="text-[10px] text-slate-400">Processing real-time contact credential extraction.</p>
+                  </div>
+                </div>
+              )}
+
+              {/* TAB 1: Customer details fields */}
+              {activeTab === "details" && (
+                <div className="space-y-4 pt-2">
+                  
+                  {/* Contact Name */}
+                  <div className="space-y-1.5">
+                    <label className="block text-sm font-semibold text-slate-900">
+                      Customer Name <span className="text-rose-500">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={extractedData.contactName || ""}
+                      onChange={(e) => handleFieldChange("contactName", e.target.value)}
+                      placeholder="Customer Name"
+                      className="w-full bg-transparent border-b border-slate-300 focus:border-b-2 focus:border-[#673ab7] outline-none py-1.5 text-sm text-slate-800 transition-all font-sans"
+                    />
+                  </div>
+
+                  {/* Contact Number */}
+                  <div className="space-y-1.5">
+                    <label className="block text-sm font-semibold text-slate-900">
+                      Contact Number
+                    </label>
+                    <input
+                      type="text"
+                      value={extractedData.phone || ""}
+                      onChange={(e) => handleFieldChange("phone", e.target.value)}
+                      placeholder="Contact Number"
+                      className="w-full bg-transparent border-b border-slate-300 focus:border-b-2 focus:border-[#673ab7] outline-none py-1.5 text-sm text-slate-800 transition-all font-sans"
+                    />
+                  </div>
+
+                  {/* Email Id */}
+                  <div className="space-y-1.5">
+                    <label className="block text-sm font-semibold text-slate-900">
+                      Email Address
+                    </label>
+                    <input
+                      type="email"
+                      value={extractedData.email || ""}
+                      onChange={(e) => handleFieldChange("email", e.target.value)}
+                      placeholder="Email Address"
+                      className="w-full bg-transparent border-b border-slate-300 focus:border-b-2 focus:border-[#673ab7] outline-none py-1.5 text-sm text-slate-800 transition-all font-sans"
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* TAB 2: Camera Visiting Card Scanner */}
+              {activeTab === "photo" && (
+                <div className="space-y-4 pt-2">
+                  <div className="flex items-center justify-between border-b border-slate-100 pb-1.5">
+                    <span className="text-xs font-bold text-slate-500">Scan Visiting Card Photo</span>
+                    <div className="flex bg-slate-100 p-0.5 rounded-lg border border-slate-200">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCaptureMode("camera");
+                          setPreviewUrl(null);
+                        }}
+                        className={`px-2.5 py-1 text-[10px] font-bold rounded transition-all cursor-pointer ${
+                          captureMode === "camera" ? "bg-white text-slate-800 shadow-3xs" : "text-slate-400"
+                        }`}
+                      >
+                        Use Camera
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCaptureMode("upload");
+                          setPreviewUrl(null);
+                          stopCamera();
+                        }}
+                        className={`px-2.5 py-1 text-[10px] font-bold rounded transition-all cursor-pointer ${
+                          captureMode === "upload" ? "bg-white text-slate-800 shadow-3xs" : "text-slate-400"
+                        }`}
+                      >
+                        Upload File
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Camera frame */}
+                  {captureMode === "camera" && (
+                    <div className="space-y-3">
+                      {cameraError ? (
+                        <div className="p-3 bg-amber-50 border border-amber-250 rounded-lg text-xs space-y-1">
+                          <p className="font-semibold text-amber-850">Camera Interface Offline</p>
+                          <p className="text-amber-700">{cameraError}</p>
+                          <button
+                            type="button"
+                            onClick={startCamera}
+                            className="text-xs font-bold text-amber-900 underline hover:text-amber-950 cursor-pointer block mt-1"
+                          >
+                            Reinitialize Camera
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="relative aspect-video w-full rounded-lg overflow-hidden bg-slate-950 border border-slate-800">
+                          {cameraStream ? (
+                            <>
+                              <video
+                                ref={setVideoRef}
+                                autoPlay
+                                playsInline
+                                className="w-full h-full object-cover"
+                              />
+                              <div className="absolute top-2 left-2 bg-slate-900/85 border border-slate-800 text-white font-mono text-[9px] px-2 py-0.5 rounded tracking-wider uppercase">
+                                Snap card ready
+                              </div>
+                            </>
+                          ) : (
+                            <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-500 p-4 text-center">
+                              <RefreshCw className="animate-spin text-slate-600 mb-2" size={20} />
+                              <p className="text-xs">Preparing visiting card camera...</p>
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      <button
+                        type="button"
+                        onClick={handleCapture}
+                        disabled={!cameraStream || isExtracting}
+                        className="w-full bg-[#673ab7] hover:bg-[#5e35b1] disabled:bg-slate-100 disabled:text-slate-400 text-white rounded-md py-2.5 text-xs font-bold inline-flex items-center justify-center gap-1.5 transition-all cursor-pointer shadow-3xs"
+                      >
+                        <Camera size={14} />
+                        <span>Take Visiting Card Snapshot</span>
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Upload card */}
+                  {captureMode === "upload" && (
+                    <div
+                      onDragOver={handleDragOver}
+                      onDragLeave={handleDragLeave}
+                      onDrop={handleDrop}
+                      className={`border border-dashed rounded-lg p-6 text-center flex flex-col items-center justify-center transition-all ${
+                        isDragging ? "border-[#673ab7] bg-[#fbfaff]" : "border-slate-300 bg-slate-50/50"
+                      }`}
+                    >
+                      <input
+                        type="file"
+                        id="visiting-card-file"
+                        accept="image/*"
+                        onChange={handleFileChange}
+                        className="hidden"
                       />
-                      {/* Scanning visual indicator */}
-                      <div className="absolute inset-x-0 h-0.5 bg-[#673ab7]/50 shadow-[0_0_10px_#673ab7] scanner-line top-0" />
-                      <div className="absolute top-2 left-2 bg-slate-900/80 border border-slate-800 text-[#ede7f6] font-mono text-[9px] px-2 py-0.5 rounded tracking-widest uppercase flex items-center gap-1">
-                        <span className="w-1.5 h-1.5 bg-[#673ab7] rounded-full animate-ping" />
-                        <span>Ready to capture</span>
+                      <label htmlFor="visiting-card-file" className="cursor-pointer flex flex-col items-center space-y-2">
+                        <UploadCloud size={20} className="text-[#673ab7]" />
+                        <span className="text-xs font-bold text-slate-700">Drag card photo here or Browse files</span>
+                        <span className="text-[10px] text-slate-400">PNG, JPEG up to 10MB</span>
+                      </label>
+                    </div>
+                  )}
+
+                  {/* Loaded card preview */}
+                  {previewUrl && (
+                    <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 flex items-start gap-3 text-xs">
+                      <img
+                        src={previewUrl}
+                        alt="Source visiting card"
+                        className="w-12 h-12 object-cover rounded border border-slate-200 shrink-0"
+                      />
+                      <div className="flex-1 min-w-0">
+                        <p className="font-bold text-slate-800">Visiting Card Image Loaded</p>
+                        <div className="mt-1.5 flex gap-2">
+                          <button
+                            type="button"
+                            onClick={() => triggerOcr(activeBase64, activeMimeType)}
+                            disabled={isExtracting}
+                            className="text-[10px] font-bold text-[#673ab7] hover:underline"
+                          >
+                            Scan details again
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setPreviewUrl(null);
+                              setActiveBase64("");
+                              setActiveMimeType("");
+                            }}
+                            className="text-[10px] font-bold text-rose-600 hover:underline"
+                          >
+                            Remove Card Photo
+                          </button>
+                        </div>
                       </div>
-                    </>
-                  ) : (
-                    <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-500 p-4 text-center">
-                      <RefreshCw className="animate-spin text-slate-600 mb-2" size={24} />
-                      <p className="text-xs font-medium">Powering up local camera...</p>
                     </div>
                   )}
                 </div>
               )}
 
-              <button
-                onClick={handleCapture}
-                disabled={!cameraStream || isExtracting}
-                id="capture-photo-btn"
-                className="w-full bg-[#673ab7] hover:bg-[#5e35b1] disabled:bg-slate-100 disabled:text-slate-400 text-white rounded-md py-2.5 text-sm font-semibold inline-flex items-center justify-center gap-2 transition-all cursor-pointer shadow-xs"
-              >
-                <Camera size={16} />
-                <span>Take Snapshot & Populate Form Questions</span>
-              </button>
             </div>
-          )}
 
-          {/* Manual File Dropzone */}
-          {captureMode === "upload" && (
+            {/* Separator */}
+            <div className="border-t border-slate-100 pt-6" />
+
+            {/* LOWER SECTION: Enquiry Photos & Attachments */}
             <div className="space-y-4">
-              <div
-                onDragOver={handleDragOver}
-                onDragLeave={handleDragLeave}
-                onDrop={handleDrop}
-                className={`border-2 border-dashed rounded-lg p-8 text-center flex flex-col items-center justify-center transition-all ${
-                  isDragging
-                    ? "border-[#673ab7] bg-[#f0ebf8]/40 scale-[0.99]"
-                    : "border-slate-300 hover:border-slate-400 bg-slate-50/50"
-                }`}
-              >
-                <input
-                  type="file"
-                  id="file-selector"
-                  accept="image/*"
-                  onChange={handleFileChange}
-                  className="hidden"
-                />
-                <label
-                  htmlFor="file-selector"
-                  className="flex flex-col items-center cursor-pointer space-y-3"
-                >
-                  <div className="p-3 bg-white border border-slate-200 rounded-lg text-slate-500 shadow-2xs">
-                    <UploadCloud size={24} className="text-[#673ab7]" />
-                  </div>
+              {/* Enquiry Photos and Attachments section with MULTIPLE PHOTOS capture */}
+              <div className="space-y-3 bg-[#faf9fc] border border-indigo-100/40 p-4 rounded-xl">
+                <div className="flex items-center justify-between">
                   <div>
-                    <p className="text-xs font-bold text-slate-800">
-                      Drag image here or browse folders
-                    </p>
-                    <p className="text-[10px] text-slate-400 mt-1">
-                      Supports PNG, JPG, or JPEG up to 10MB
-                    </p>
+                    <h4 className="text-xs font-bold text-slate-800">Enquiry Photos & Attachments</h4>
+                    <p className="text-[10px] text-slate-400">Add multiple photos/materials with the Add Button.</p>
                   </div>
-                  <span className="inline-flex py-1.5 px-3.5 bg-white border border-slate-200 rounded text-xs font-semibold text-slate-700 shadow-2xs hover:bg-slate-50 transition-all">
-                    Select File
-                  </span>
-                </label>
-              </div>
-            </div>
-          )}
-
-          {/* Loaded image preview details */}
-          {previewUrl && (
-            <div className="bg-slate-50 border border-slate-200 rounded-lg p-3.5 flex items-start gap-4">
-              <img
-                src={previewUrl}
-                alt="Source preview"
-                className="w-16 h-16 object-cover rounded border border-slate-200 shrink-0 bg-slate-100"
-              />
-              <div className="flex-1 min-w-0">
-                <p className="text-xs font-bold text-slate-800 truncate">
-                  Target Image Processed
-                </p>
-                <p className="text-[10px] text-slate-400 mt-1 font-mono uppercase">
-                  MIME-TYPE: {activeMimeType}
-                </p>
-                <div className="mt-2.5 flex gap-2">
                   <button
-                    onClick={() => triggerOcr(activeBase64, activeMimeType)}
-                    disabled={isExtracting}
-                    className="text-[10px] font-bold text-[#673ab7] hover:text-[#5e35b1] bg-[#f0ebf8] px-2 py-1 rounded border border-[#ede7f6] inline-flex items-center gap-1 transition-all cursor-pointer"
-                  >
-                    <RefreshCw size={10} className={isExtracting ? "animate-spin" : ""} />
-                    <span>Run OCR Re-extract</span>
-                  </button>
-                  <button
+                    type="button"
                     onClick={() => {
-                      setPreviewUrl(null);
-                      setExtractedData(null);
+                      setShowAttachmentSelector(!showAttachmentSelector);
+                      stopCamera(); // Turn off card camera if active
                     }}
-                    className="text-[10px] font-bold text-rose-600 hover:text-rose-700 bg-rose-50 px-2 py-1 rounded border border-rose-100 transition-all cursor-pointer"
+                    className="inline-flex items-center gap-1 px-2.5 py-1.5 bg-white border border-slate-200 hover:border-[#673ab7] hover:bg-[#ede7f6] hover:text-[#673ab7] text-slate-700 rounded-md text-[11px] font-bold transition-all cursor-pointer shadow-3xs"
                   >
-                    Remove Image
+                    <Plus size={12} />
+                    <span>{showAttachmentSelector ? "Hide Options" : "Add Photo"}</span>
                   </button>
                 </div>
+
+                {/* Inline Attachment capture drawer */}
+                {showAttachmentSelector && (
+                  <div className="bg-white border border-slate-200 rounded-lg p-3 space-y-3 shadow-2xs animate-fade-in">
+                    <div className="flex items-center justify-between border-b border-slate-100 pb-1.5">
+                      <span className="text-[9px] font-bold text-slate-500 uppercase">Attach Photo Mode</span>
+                      <div className="flex bg-slate-100 p-0.5 rounded-lg border border-slate-200">
+                        <button
+                          type="button"
+                          onClick={() => setAttachmentCaptureMode("camera")}
+                          className={`px-2 py-0.5 text-[9px] font-bold rounded transition-all cursor-pointer ${
+                            attachmentCaptureMode === "camera" ? "bg-white text-slate-800 shadow-3xs" : "text-slate-400"
+                          }`}
+                        >
+                          Live Camera
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setAttachmentCaptureMode("upload")}
+                          className={`px-2 py-0.5 text-[9px] font-bold rounded transition-all cursor-pointer ${
+                            attachmentCaptureMode === "upload" ? "bg-white text-slate-800 shadow-3xs" : "text-slate-400"
+                          }`}
+                        >
+                          Upload Files
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Camera stream */}
+                    {attachmentCaptureMode === "camera" && (
+                      <div className="space-y-2">
+                        {attachmentCameraError ? (
+                          <div className="p-2 bg-rose-50 border border-rose-150 rounded text-[11px] text-rose-700">
+                            {attachmentCameraError}
+                          </div>
+                        ) : (
+                          <div className="relative aspect-video w-full rounded bg-slate-900 overflow-hidden max-h-[160px] border border-slate-800">
+                            {attachmentCameraStream ? (
+                              <video
+                                ref={setAttachmentVideoRef}
+                                autoPlay
+                                playsInline
+                                className="w-full h-full object-cover"
+                              />
+                            ) : (
+                              <div className="absolute inset-0 flex items-center justify-center text-slate-500 text-xs">
+                                Starting attachment camera...
+                              </div>
+                            )}
+                          </div>
+                        )}
+                        <button
+                          type="button"
+                          onClick={handleCaptureAttachment}
+                          disabled={!attachmentCameraStream}
+                          className="w-full bg-[#673ab7] hover:bg-[#5e35b1] disabled:bg-slate-100 text-white py-1.5 rounded text-[11px] font-bold cursor-pointer"
+                        >
+                          Snap & Attach
+                        </button>
+                      </div>
+                    )}
+
+                    {/* Choose files */}
+                    {attachmentCaptureMode === "upload" && (
+                      <div className="text-center p-4 border border-dashed border-slate-200 rounded">
+                        <input
+                          type="file"
+                          id="attachment-files"
+                          accept="image/*"
+                          multiple
+                          onChange={handleAttachmentFileChange}
+                          className="hidden"
+                        />
+                        <label htmlFor="attachment-files" className="cursor-pointer flex flex-col items-center space-y-1">
+                          <Plus size={16} className="text-[#673ab7]" />
+                          <span className="text-[11px] font-bold text-slate-700">Choose Images</span>
+                          <span className="text-[9px] text-slate-400">Click to select files (multiple allowed)</span>
+                        </label>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Grid gallery of attached photos */}
+                {attachedPhotos.length > 0 ? (
+                  <div className="grid grid-cols-4 sm:grid-cols-6 gap-2 pt-1">
+                    {attachedPhotos.map((photo, index) => (
+                      <div key={index} className="relative aspect-square rounded-lg border border-slate-200 overflow-hidden bg-white group shadow-3xs">
+                        <img
+                          src={photo.previewUrl}
+                          alt={`Attachment ${index + 1}`}
+                          className="w-full h-full object-cover"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveAttachmentPhoto(index)}
+                          className="absolute top-1 right-1 bg-rose-600/90 text-white rounded-full p-0.5 hover:bg-rose-700 transition-all cursor-pointer shadow-sm"
+                          title="Remove photo"
+                        >
+                          <X size={10} />
+                        </button>
+                        <div className="absolute bottom-0 inset-x-0 bg-slate-900/60 text-white text-[8px] font-bold text-center py-0.5">
+                          Photo {index + 1}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="border border-dashed border-slate-250 rounded-lg p-3 text-center text-slate-400 text-[11px]">
+                    No Enquiry Photos attached yet. Click "+ Add Photo" to attach materials.
+                  </div>
+                )}
               </div>
+
+              {/* Raw OCR logs */}
+              {extractedData.ocrText && (
+                <div className="space-y-1.5 bg-slate-50 p-3 rounded-lg border border-slate-200">
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider font-mono">
+                    Scanned OCR Text Details
+                  </label>
+                  <div className="text-[11px] text-slate-600 font-mono max-h-[80px] overflow-y-auto whitespace-pre-wrap select-text leading-normal">
+                    {extractedData.ocrText}
+                  </div>
+                </div>
+              )}
+
             </div>
-          )}
-        </section>
 
-        {/* Card 3: Google Form Structured Questions Card */}
-        <section className="bg-white rounded-lg border border-slate-200 shadow-xs overflow-hidden relative">
-          
-          {/* Active form thick purple vertical indicator like Google Forms */}
-          <div className="absolute left-0 top-0 bottom-0 w-1 bg-[#673ab7]" />
+            {/* Form actions */}
+            <div className="border-t border-slate-100 pt-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <p className="text-[11px] text-slate-400 max-w-sm leading-normal">
+                Make sure details are accurate. Clicking "Submit response" will append all fields and photo attachments to your destination sheet instantly.
+              </p>
 
-          <div className="p-6 md:p-8 space-y-8">
-            <div className="border-b border-slate-100 pb-3 flex items-center justify-between">
-              <h3 className="text-sm font-bold text-[#673ab7] uppercase tracking-wide">
-                Form Questions & OCR Mapping
-              </h3>
-              <span className="text-[10px] bg-slate-100 text-slate-500 font-mono px-2 py-0.5 rounded border border-slate-200 uppercase font-semibold">
-                Auto-extraction ready
-              </span>
-            </div>
-
-            {/* Waiting/Idle state */}
-            {!isExtracting && !extractedData && !ocrError && (
-              <div className="py-12 text-center max-w-md mx-auto space-y-4">
-                <div className="p-4 bg-slate-50 text-slate-400 rounded-full inline-block">
-                  <FileText size={32} className="text-[#673ab7]/60" />
-                </div>
-                <div>
-                  <h4 className="text-sm font-bold text-slate-800">Form is currently blank</h4>
-                  <p className="text-xs text-slate-400 mt-1 leading-normal">
-                    Snap a photo or upload an inquiry document above. Gemini AI will automatically read the picture and populate these fields in real-time.
-                  </p>
-                </div>
-              </div>
-            )}
-
-            {/* Running extraction state */}
-            {isExtracting && (
-              <div className="py-16 text-center space-y-4 max-w-sm mx-auto">
-                <div className="relative flex items-center justify-center">
-                  <div className="w-10 h-10 border-4 border-slate-100 border-t-[#673ab7] rounded-full animate-spin" />
-                  <Sparkles className="absolute text-[#673ab7] animate-pulse" size={14} />
-                </div>
-                <div>
-                  <h4 className="text-xs font-bold text-slate-800">Extracting details using OCR...</h4>
-                  <p className="text-[10px] text-slate-400 mt-1">
-                    Gemini 3.5 Flash is analyzing your image to extract structured contact credentials.
-                  </p>
-                </div>
-              </div>
-            )}
-
-            {/* OCR failure state */}
-            {ocrError && (
-              <div className="p-4 bg-rose-50 text-rose-700 border border-rose-100 rounded-lg space-y-2 text-xs">
-                <div className="flex items-center gap-2 font-semibold">
-                  <AlertCircle size={14} />
-                  <span>OCR extraction was unable to run</span>
-                </div>
-                <p className="text-[11px] leading-relaxed">{ocrError}</p>
+              <div className="flex items-center gap-3 justify-end">
                 <button
-                  onClick={() => triggerOcr(activeBase64, activeMimeType)}
-                  className="text-xs font-bold text-rose-900 underline hover:text-[#673ab7]"
+                  type="button"
+                  onClick={handleClearForm}
+                  className="px-4 py-2 hover:bg-slate-100 text-slate-500 rounded text-xs font-semibold transition-all cursor-pointer font-sans"
                 >
-                  Retry analysis
+                  Clear form
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowConfirmModal(true)}
+                  disabled={!selectedSpreadsheetId || !extractedData.contactName}
+                  id="save-to-sheets-btn"
+                  className="bg-[#673ab7] hover:bg-[#5e35b1] disabled:bg-slate-100 disabled:text-slate-400 text-white rounded-md px-6 py-2.5 text-xs font-bold transition-all cursor-pointer shadow-sm inline-flex items-center gap-1.5"
+                >
+                  <Check size={13} />
+                  <span>Submit response</span>
                 </button>
               </div>
-            )}
+            </div>
 
-            {/* Editable Fields rendered EXACTLY like Google Form questions */}
-            {extractedData && (
-              <div className="space-y-6">
-                
-                {/* 1. Document Type */}
-                <div className="space-y-2">
-                  <label className="block text-sm font-semibold text-slate-900">
-                    What type of inquiry document is this? <span className="text-rose-500">*</span>
-                  </label>
-                  <p className="text-xs text-slate-400">Classified automatically based on image contents.</p>
-                  <select
-                    value={extractedData.documentType}
-                    onChange={(e) => handleFieldChange("documentType", e.target.value)}
-                    className="w-full sm:w-1/2 bg-transparent border-b border-slate-300 focus:border-b-2 focus:border-[#673ab7] outline-none py-1.5 text-sm text-slate-800 transition-all font-medium cursor-pointer"
-                  >
-                    <option value="business_card">Business Card</option>
-                    <option value="invoice">Invoice</option>
-                    <option value="receipt">Receipt</option>
-                    <option value="written_note">Handwritten Note</option>
-                    <option value="email_screenshot">Email Screenshot</option>
-                    <option value="product_brochure">Product Brochure</option>
-                    <option value="unknown">Other / Unrecognized</option>
-                  </select>
-                </div>
-
-                {/* 2. Contact Name */}
-                <div className="space-y-2">
-                  <label className="block text-sm font-semibold text-slate-900">
-                    Contact Name <span className="text-rose-500">*</span>
-                  </label>
-                  <input
-                    type="text"
-                    value={extractedData.contactName}
-                    onChange={(e) => handleFieldChange("contactName", e.target.value)}
-                    placeholder="Your answer"
-                    className="w-full bg-transparent border-b border-slate-300 focus:border-b-2 focus:border-[#673ab7] outline-none py-2 text-sm text-slate-800 transition-all font-sans"
-                  />
-                </div>
-
-                {/* 3. Company */}
-                <div className="space-y-2">
-                  <label className="block text-sm font-semibold text-slate-900">
-                    Company / Organization Name
-                  </label>
-                  <input
-                    type="text"
-                    value={extractedData.company}
-                    onChange={(e) => handleFieldChange("company", e.target.value)}
-                    placeholder="Your answer"
-                    className="w-full bg-transparent border-b border-slate-300 focus:border-b-2 focus:border-[#673ab7] outline-none py-2 text-sm text-slate-800 transition-all font-sans"
-                  />
-                </div>
-
-                {/* 4. Email */}
-                <div className="space-y-2">
-                  <label className="block text-sm font-semibold text-slate-900">
-                    Email Address
-                  </label>
-                  <input
-                    type="email"
-                    value={extractedData.email}
-                    onChange={(e) => handleFieldChange("email", e.target.value)}
-                    placeholder="Your answer"
-                    className="w-full bg-transparent border-b border-slate-300 focus:border-b-2 focus:border-[#673ab7] outline-none py-2 text-sm text-slate-800 transition-all font-sans"
-                  />
-                </div>
-
-                {/* 5. Phone */}
-                <div className="space-y-2">
-                  <label className="block text-sm font-semibold text-slate-900">
-                    Phone Number
-                  </label>
-                  <input
-                    type="text"
-                    value={extractedData.phone}
-                    onChange={(e) => handleFieldChange("phone", e.target.value)}
-                    placeholder="Your answer"
-                    className="w-full bg-transparent border-b border-slate-300 focus:border-b-2 focus:border-[#673ab7] outline-none py-2 text-sm text-slate-800 transition-all font-sans"
-                  />
-                </div>
-
-                {/* 6. Inquiry Summary */}
-                <div className="space-y-2">
-                  <label className="block text-sm font-semibold text-slate-900">
-                    Inquiry Details & Requirements <span className="text-rose-500">*</span>
-                  </label>
-                  <p className="text-xs text-slate-400">Specify details of products, request context, or special specifications.</p>
-                  <textarea
-                    rows={3}
-                    value={extractedData.inquiryDetails}
-                    onChange={(e) => handleFieldChange("inquiryDetails", e.target.value)}
-                    placeholder="Your answer"
-                    className="w-full bg-transparent border-b border-slate-300 focus:border-b-2 focus:border-[#673ab7] outline-none py-2 text-sm text-slate-800 transition-all font-sans resize-none"
-                  />
-                </div>
-
-                {/* 7. Budget */}
-                <div className="space-y-2">
-                  <label className="block text-sm font-semibold text-slate-900">
-                    Estimated Budget / Quotation Total
-                  </label>
-                  <input
-                    type="text"
-                    value={extractedData.estimatedBudget}
-                    onChange={(e) => handleFieldChange("estimatedBudget", e.target.value)}
-                    placeholder="Your answer"
-                    className="w-full bg-transparent border-b border-slate-300 focus:border-b-2 focus:border-[#673ab7] outline-none py-2 text-sm text-slate-800 transition-all font-sans"
-                  />
-                </div>
-
-                {/* 8. Raw Transcription */}
-                <div className="space-y-2 bg-slate-50 p-4 rounded border border-slate-200">
-                  <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider font-mono">
-                    Full Document Text Output (OCR)
-                  </label>
-                  <div className="text-xs text-slate-600 font-mono whitespace-pre-wrap leading-normal select-text">
-                    {extractedData.ocrText || "No readable raw text found."}
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Submit controls */}
-            {extractedData && (
-              <div className="border-t border-slate-100 pt-6 mt-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                <p className="text-xs text-slate-400 max-w-sm font-sans leading-normal">
-                  Make sure details are accurate. Clicking "Submit form response" will update your destination Google Sheet instantly.
-                </p>
-
-                <div className="flex items-center gap-3">
-                  <button
-                    onClick={() => {
-                      setExtractedData(null);
-                      setPreviewUrl(null);
-                    }}
-                    className="px-4 py-2 hover:bg-slate-100 text-slate-500 rounded text-sm font-semibold transition-all cursor-pointer font-sans"
-                  >
-                    Clear form
-                  </button>
-                  <button
-                    onClick={() => setShowConfirmModal(true)}
-                    disabled={!selectedSpreadsheetId}
-                    id="save-to-sheets-btn"
-                    className="bg-[#673ab7] hover:bg-[#5e35b1] disabled:bg-slate-100 disabled:text-slate-400 text-white rounded-md px-6 py-2 text-sm font-semibold transition-all cursor-pointer shadow-xs font-sans inline-flex items-center gap-1.5"
-                  >
-                    <Check size={14} />
-                    <span>Submit response</span>
-                  </button>
-                </div>
-              </div>
-            )}
           </div>
         </section>
 

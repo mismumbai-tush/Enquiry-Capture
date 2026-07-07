@@ -7,6 +7,8 @@ export interface InquiryData {
   estimatedBudget: string;
   documentType: string;
   ocrText: string;
+  visitingCardPhotoUrl?: string;
+  inquiryPhotoUrls?: string;
 }
 
 export interface GoogleDriveFile {
@@ -83,10 +85,12 @@ export async function createSpreadsheet(accessToken: string, title: string): Pro
       "Estimated Budget",
       "Document Type",
       "Raw OCR Text",
+      "Visiting Card Photo",
+      "Enquiry Photos"
     ];
 
     const headerResponse = await fetch(
-      `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/Inquiries!A1:I1?valueInputOption=USER_ENTERED`,
+      `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/Inquiries!A1:K1?valueInputOption=USER_ENTERED`,
       {
         method: "PUT",
         headers: {
@@ -133,10 +137,12 @@ export async function appendInquiryRow(
       inquiry.estimatedBudget || "N/A",
       inquiry.documentType || "N/A",
       inquiry.ocrText || "N/A",
+      inquiry.visitingCardPhotoUrl || "N/A",
+      inquiry.inquiryPhotoUrls || "N/A"
     ];
 
     // Determine the range. If empty sheetName, default to first sheet
-    const targetRange = sheetName ? `${sheetName}!A:I` : "A:I";
+    const targetRange = sheetName ? `${sheetName}!A:K` : "A:K";
 
     const response = await fetch(
       `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${targetRange}:append?valueInputOption=USER_ENTERED`,

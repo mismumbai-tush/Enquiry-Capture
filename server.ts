@@ -68,7 +68,7 @@ app.post("/api/ocr", async (req, res) => {
     };
 
     const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
+      model: "gemini-3.5-flash",
       contents: { parts: [imagePart, textPart] },
       config: {
         responseMimeType: "application/json",
@@ -188,10 +188,71 @@ app.post("/api/settings", (req, res) => {
   }
 });
 
+// API endpoint to upload images and get their public URLs
+app.post("/api/upload", (req, res) => {
+  try {
+    const { imageBase64, imageMimeType, attachedPhotos } = req.body;
+    
+    // 1. Process visiting card photo if present
+    let photoUrl = "";
+    if (imageBase64) {
+      try {
+        const extension = imageMimeType?.split("/")[1] || "jpg";
+        const filename = `photo_${Date.now()}_vcard.${extension}`;
+        const filePath = path.join(uploadsDir, filename);
+        
+        const buffer = Buffer.from(imageBase64, "base64");
+        fs.writeFileSync(filePath, buffer);
+
+        const host = req.get("host") || "localhost:3000";
+        const protocol = host.includes("localhost") || host.includes("127.0.0.1") ? "http" : "https";
+        photoUrl = `${protocol}://${host}/uploads/${filename}`;
+        console.log(`Uploaded visiting card photo: ${photoUrl}`);
+      } catch (imgErr) {
+        console.error("Failed to save visiting card image:", imgErr);
+      }
+    }
+
+    // 2. Process attached inquiry photos if present
+    const inquiryPhotoUrls: string[] = [];
+    if (Array.isArray(attachedPhotos)) {
+      for (let i = 0; i < attachedPhotos.length; i++) {
+        try {
+          const photo = attachedPhotos[i];
+          if (photo && photo.base64) {
+            const extension = photo.mimeType?.split("/")[1] || "jpg";
+            const filename = `photo_${Date.now()}_enq_${i}.${extension}`;
+            const filePath = path.join(uploadsDir, filename);
+            
+            const buffer = Buffer.from(photo.base64, "base64");
+            fs.writeFileSync(filePath, buffer);
+
+            const host = req.get("host") || "localhost:3000";
+            const protocol = host.includes("localhost") || host.includes("127.0.0.1") ? "http" : "https";
+            inquiryPhotoUrls.push(`${protocol}://${host}/uploads/${filename}`);
+          }
+        } catch (photoErr) {
+          console.error(`Failed to save inquiry photo ${i}:`, photoErr);
+        }
+      }
+    }
+
+    res.json({
+      success: true,
+      photoUrl,
+      inquiryPhotoUrls: inquiryPhotoUrls.join(", "),
+      inquiryPhotoUrlsArray: inquiryPhotoUrls
+    });
+  } catch (err: any) {
+    console.error("Upload handler error:", err);
+    res.status(500).json({ error: "Failed to upload photos." });
+  }
+});
+
 // API endpoint to submit form response to Google Sheet via Google Apps Script proxy
 app.post("/api/submit-response", async (req, res) => {
   try {
-    const { extractedData, imageBase64, imageMimeType, googleAppsScriptUrl } = req.body;
+    const { extractedData, imageBase64, imageMimeType, attachedPhotos, googleAppsScriptUrl } = req.body;
 
     if (!extractedData) {
       res.status(400).json({ error: "Missing extracted form data." });
@@ -215,12 +276,12 @@ app.post("/api/submit-response", async (req, res) => {
       return;
     }
 
-    // Save image to local uploads directory if base64 is present
+    // Save image to local uploads directory if base64 is present (Visiting card photo)
     let publicImageUrl = "";
     if (imageBase64) {
       try {
         const extension = imageMimeType?.split("/")[1] || "jpg";
-        const filename = `photo_${Date.now()}_${Math.floor(1000 + Math.random() * 9000)}.${extension}`;
+        const filename = `photo_${Date.now()}_vcard.${extension}`;
         const filePath = path.join(uploadsDir, filename);
         
         // Write the file
@@ -229,19 +290,44 @@ app.post("/api/submit-response", async (req, res) => {
 
         // Build the public URL (Use https for Google Sheets integration)
         const host = req.get("host") || "localhost:3000";
-        publicImageUrl = `https://${host}/uploads/${filename}`;
+        const protocol = host.includes("localhost") || host.includes("127.0.0.1") ? "http" : "https";
+        publicImageUrl = `${protocol}://${host}/uploads/${filename}`;
         console.log(`Saved public photo at: ${publicImageUrl}`);
       } catch (imgErr) {
         console.error("Failed to save image locally:", imgErr);
       }
     }
 
+    // Save additional inquiry photos
+    const inquiryPhotoUrls: string[] = [];
+    if (Array.isArray(attachedPhotos)) {
+      for (let i = 0; i < attachedPhotos.length; i++) {
+        try {
+          const photo = attachedPhotos[i];
+          if (photo && photo.base64) {
+            const extension = photo.mimeType?.split("/")[1] || "jpg";
+            const filename = `photo_${Date.now()}_enq_${i}.${extension}`;
+            const filePath = path.join(uploadsDir, filename);
+            const buffer = Buffer.from(photo.base64, "base64");
+            fs.writeFileSync(filePath, buffer);
+            const host = req.get("host") || "localhost:3000";
+            const protocol = host.includes("localhost") || host.includes("127.0.0.1") ? "http" : "https";
+            inquiryPhotoUrls.push(`${protocol}://${host}/uploads/${filename}`);
+          }
+        } catch (photoErr) {
+          console.error(`Failed to save inquiry photo ${i} locally:`, photoErr);
+        }
+      }
+    }
+
     // Prepare payload for Google Apps Script Web App
     const payload = {
       ...extractedData,
-      photoUrl: publicImageUrl,
+      photoUrl: publicImageUrl, // Visiting card photo
       imageBase64: imageBase64 || "",
-      imageMimeType: imageMimeType || ""
+      imageMimeType: imageMimeType || "",
+      inquiryPhotoUrls: inquiryPhotoUrls.join(", "), // Comma separated list for spreadsheets
+      inquiryPhotoUrlsArray: inquiryPhotoUrls // Array for advanced Apps Script uses
     };
 
     console.log(`Forwarding submission to Google Apps Script: ${scriptUrl}`);

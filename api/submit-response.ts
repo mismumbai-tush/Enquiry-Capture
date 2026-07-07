@@ -10,7 +10,7 @@ export default async function handler(req: any, res: any) {
   }
 
   try {
-    const { extractedData, imageBase64, imageMimeType, googleAppsScriptUrl } = req.body;
+    const { extractedData, imageBase64, imageMimeType, attachedPhotos, googleAppsScriptUrl } = req.body;
 
     if (!extractedData) {
       return res.status(400).json({ error: "Missing extracted form data." });
@@ -55,7 +55,7 @@ export default async function handler(req: any, res: any) {
     if (imageBase64) {
       try {
         const extension = imageMimeType?.split("/")[1] || "jpg";
-        const filename = `photo_${Date.now()}_${Math.floor(1000 + Math.random() * 9000)}.${extension}`;
+        const filename = `photo_${Date.now()}_vcard.${extension}`;
         
         const filePath = path.join("/tmp", filename);
         const buffer = Buffer.from(imageBase64, "base64");
@@ -70,12 +70,36 @@ export default async function handler(req: any, res: any) {
       }
     }
 
+    // Save additional inquiry photos
+    const inquiryPhotoUrls: string[] = [];
+    if (Array.isArray(attachedPhotos)) {
+      for (let i = 0; i < attachedPhotos.length; i++) {
+        try {
+          const photo = attachedPhotos[i];
+          if (photo && photo.base64) {
+            const extension = photo.mimeType?.split("/")[1] || "jpg";
+            const filename = `photo_${Date.now()}_enq_${i}.${extension}`;
+            const filePath = path.join("/tmp", filename);
+            const buffer = Buffer.from(photo.base64, "base64");
+            fs.writeFileSync(filePath, buffer);
+            const host = req.headers.host || "localhost:3000";
+            const protocol = host.includes("localhost") || host.includes("127.0.0.1") ? "http" : "https";
+            inquiryPhotoUrls.push(`${protocol}://${host}/api/photo?name=${filename}`);
+          }
+        } catch (photoErr) {
+          console.error(`Failed to save inquiry photo ${i} in Vercel temp:`, photoErr);
+        }
+      }
+    }
+
     // Forward to Google Sheets Web App
     const payload = {
       ...extractedData,
-      photoUrl: publicImageUrl,
+      photoUrl: publicImageUrl, // Visiting card photo
       imageBase64: imageBase64 || "",
-      imageMimeType: imageMimeType || ""
+      imageMimeType: imageMimeType || "",
+      inquiryPhotoUrls: inquiryPhotoUrls.join(", "), // Comma separated list for spreadsheets
+      inquiryPhotoUrlsArray: inquiryPhotoUrls // Array for advanced Apps Script uses
     };
 
     console.log(`Forwarding submission to Google Apps Script: ${scriptUrl}`);
