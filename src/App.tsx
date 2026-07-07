@@ -269,9 +269,6 @@ export default function App() {
         audio: false,
       });
       setCameraStream(stream);
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-      }
     } catch (err: any) {
       console.error("Camera error:", err);
       setCameraError(
@@ -295,6 +292,13 @@ export default function App() {
     }
     return () => stopCamera();
   }, [captureMode]);
+
+  // Bind stream to the video element once the video element mounts (after cameraStream is set and re-render occurs)
+  useEffect(() => {
+    if (cameraStream && videoRef.current) {
+      videoRef.current.srcObject = cameraStream;
+    }
+  }, [cameraStream]);
 
   // Capture current video frame
   const handleCapture = () => {
