@@ -67,7 +67,7 @@ app.post("/api/ocr", async (req, res) => {
       text: "Perform OCR and extract standard customer inquiry or business communication details from this image. Carefully look for contact names, company names, emails, phones, budgets, prices, notes, specs, products of interest, and any handwritten or printed messages. Return the structured details.",
     };
 
-    const modelsToTry = ["gemini-2.5-flash", "gemini-3.5-flash"];
+    const modelsToTry = ["gemini-flash-latest", "gemini-3.5-flash", "gemini-2.5-flash"];
     let response = null;
     let lastError = null;
 
