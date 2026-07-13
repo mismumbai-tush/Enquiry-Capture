@@ -328,6 +328,9 @@ export default function App() {
     videoRef.current = node;
     if (node && cameraStream) {
       node.srcObject = cameraStream;
+      node.play().catch((err) => {
+        console.warn("Autoplay was prevented or camera stream stopped:", err);
+      });
     }
   }, [cameraStream]);
 
@@ -401,6 +404,9 @@ export default function App() {
     attachmentVideoRef.current = node;
     if (node && attachmentCameraStream) {
       node.srcObject = attachmentCameraStream;
+      node.play().catch((err) => {
+        console.warn("Autoplay was prevented or attachment camera stream stopped:", err);
+      });
     }
   }, [attachmentCameraStream]);
 
@@ -962,6 +968,7 @@ export default function App() {
                                 ref={setVideoRef}
                                 autoPlay
                                 playsInline
+                                muted
                                 className="w-full h-full object-cover"
                               />
                               <div className="absolute top-2 left-2 bg-slate-900/85 border border-slate-800 text-white font-mono text-[9px] px-2 py-0.5 rounded tracking-wider uppercase">
@@ -974,6 +981,27 @@ export default function App() {
                               <p className="text-xs">Preparing visiting card camera...</p>
                             </div>
                           )}
+                        </div>
+                      )}
+
+                      {/* Iframe detection notice */}
+                      {typeof window !== "undefined" && window.self !== window.top && (
+                        <div className="bg-amber-50 border border-amber-200/60 rounded-lg p-2.5 text-[11px] text-amber-800 space-y-1">
+                          <p className="font-semibold flex items-center gap-1 text-amber-900">
+                            <Sparkles size={12} className="text-amber-600 animate-pulse shrink-0" />
+                            <span>Camera not opening in preview?</span>
+                          </p>
+                          <p className="leading-normal text-amber-700">
+                            Web browsers block camera and media device access inside nested iframes. Click the link below to open this form in a full tab where camera permissions will prompt instantly!
+                          </p>
+                          <a
+                            href={window.location.href}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 font-bold text-[#673ab7] hover:underline mt-1"
+                          >
+                            Open Form in New Tab &rarr;
+                          </a>
                         </div>
                       )}
 
@@ -1119,6 +1147,7 @@ export default function App() {
                                 ref={setAttachmentVideoRef}
                                 autoPlay
                                 playsInline
+                                muted
                                 className="w-full h-full object-cover"
                               />
                             ) : (
@@ -1388,7 +1417,7 @@ export default function App() {
               <div className="flex items-center gap-2 text-slate-900">
                 <Settings className="text-[#673ab7]" size={20} />
                 <h2 className="text-base font-bold font-sans">
-                  Connection Settings (कनेक्शन सेटअप)
+                  Connection Settings
                 </h2>
               </div>
               <button
@@ -1409,7 +1438,7 @@ export default function App() {
 
                 <div className="space-y-2">
                   <label className="block text-xs font-bold text-slate-700">
-                    Google Spreadsheet ID (गूगल शीट आईडी)
+                    Google Spreadsheet ID
                   </label>
                   <input
                     type="text"
@@ -1446,7 +1475,7 @@ export default function App() {
 
                 <div className="space-y-2">
                   <label className="block text-xs font-bold text-slate-700">
-                    Deployed Web App URL (वेब ऐप यूआरएल)
+                    Deployed Web App URL
                   </label>
                   <input
                     type="text"
@@ -1468,7 +1497,7 @@ export default function App() {
                 {settingsSaveSuccess && (
                   <div className="p-3 bg-emerald-50 text-emerald-800 text-xs rounded-lg border border-emerald-100 flex items-center gap-1.5">
                     <CheckCircle size={14} />
-                    <span>Settings saved successfully! (सेटिंग्स सेव हो गई हैं!)</span>
+                    <span>Settings saved successfully!</span>
                   </div>
                 )}
 
@@ -1482,7 +1511,7 @@ export default function App() {
                   ) : (
                     <Check size={14} />
                   )}
-                  <span>Save Connection Settings (कनेक्शन सेव करें)</span>
+                  <span>Save Connection Settings</span>
                 </button>
               </div>
 
@@ -1491,47 +1520,35 @@ export default function App() {
                 <div className="flex items-center gap-1.5 text-slate-800">
                   <HelpCircle size={15} className="text-[#673ab7]" />
                   <h4 className="text-xs font-bold uppercase tracking-wider">
-                    How to Set Up (सेटअप कैसे करें?)
+                    How to Set Up
                   </h4>
                 </div>
 
                 <ol className="text-xs text-slate-600 space-y-3 pl-4 list-decimal leading-relaxed">
                   <li>
                     <strong>Copy Script:</strong> Click the button below to copy the custom automation script.
-                    <br />
-                    <span className="text-[10px] text-slate-400 font-medium">नीचे दिए बटन को दबाकर स्क्रिप्ट कोड कॉपी करें।</span>
                   </li>
                   <li>
-                    <strong>Open Apps Script:</strong> Open your Google Sheet, click on <strong>Extensions (एक्सटेंशन)</strong> &rarr; <strong>Apps Script</strong> from the top menu.
-                    <br />
-                    <span className="text-[10px] text-slate-400 font-medium">गूगल शीट खोलें, Extensions मेनू में Apps Script पर क्लिक करें।</span>
+                    <strong>Open Apps Script:</strong> Open your Google Sheet, click on <strong>Extensions</strong> &rarr; <strong>Apps Script</strong> from the top menu.
                   </li>
                   <li>
                     <strong>Paste Code:</strong> Delete any code in the editor, paste the copied script, and save (Ctrl+S / Cmd+S).
-                    <br />
-                    <span className="text-[10px] text-slate-400 font-medium">पहले से मौजूद कोड को मिटाकर कॉपी किया कोड पेस्ट करें और सेव करें।</span>
                   </li>
                   <li>
                     <strong>Deploy:</strong> Click <strong>Deploy</strong> &rarr; <strong>New deployment</strong>.
-                    <br />
-                    <span className="text-[10px] text-slate-400 font-medium">Deploy बटन दबाकर New deployment चुनें।</span>
                   </li>
                   <li>
                     <strong>Configure Type:</strong> Click the Gear icon next to "Select type" and choose <strong>Web app</strong>.
-                    <br />
-                    <span className="text-[10px] text-slate-400 font-medium">गियर आइकॉन दबाकर Web app प्रकार चुनें।</span>
                   </li>
                   <li>
                     <strong>Set Permissions (CRITICAL):</strong>
                     <ul className="list-disc pl-4 mt-1 text-slate-500 space-y-0.5">
-                      <li>Execute as (इस रूप में चलाएं): <strong>Me (your-email@gmail.com)</strong></li>
-                      <li>Who has access (किसके पास पहुंच है): <strong>Anyone (कोई भी)</strong></li>
+                      <li>Execute as: <strong>Me (your-email@gmail.com)</strong></li>
+                      <li>Who has access: <strong>Anyone</strong></li>
                     </ul>
                   </li>
                   <li>
                     <strong>Submit:</strong> Click <strong>Deploy</strong>, authorize permissions when prompted, copy the generated <strong>Web App URL</strong>, paste it in the field above, and click <strong>Save Connection</strong>!
-                    <br />
-                    <span className="text-[10px] text-slate-400 font-medium">Deploy पर क्लिक करके अनुमतियों को स्वीकारें, URL कॉपी करके ऊपर पेस्ट करें और सेव करें!</span>
                   </li>
                 </ol>
 

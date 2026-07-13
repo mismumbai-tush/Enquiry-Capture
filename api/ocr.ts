@@ -46,51 +46,70 @@ export default async function handler(req: any, res: any) {
       text: "Perform OCR and extract standard customer inquiry or business communication details from this image. Carefully look for contact names, company names, emails, phones, budgets, prices, notes, specs, products of interest, and any handwritten or printed messages. Return the structured details.",
     };
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
-      contents: { parts: [imagePart, textPart] },
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            contactName: {
-              type: Type.STRING,
-              description: "The name of the main person or contact found in the document.",
-            },
-            company: {
-              type: Type.STRING,
-              description: "The name of the company or organization.",
-            },
-            email: {
-              type: Type.STRING,
-              description: "The primary contact email address.",
-            },
-            phone: {
-              type: Type.STRING,
-              description: "The primary contact phone number.",
-            },
-            inquiryDetails: {
-              type: Type.STRING,
-              description: "A summary of the inquiry, requirements, notes, products of interest, or message contained in the image.",
-            },
-            estimatedBudget: {
-              type: Type.STRING,
-              description: "Any estimated price, budget, total value, or cost mentioned.",
-            },
-            documentType: {
-              type: Type.STRING,
-              description: "The type of document: business_card, invoice, receipt, written_note, email_screenshot, product_brochure, or unknown.",
-            },
-            ocrText: {
-              type: Type.STRING,
-              description: "A complete transcription of all legible text in the image.",
+    const modelsToTry = ["gemini-2.5-flash", "gemini-3.5-flash"];
+    let response = null;
+    let lastError = null;
+
+    for (const modelName of modelsToTry) {
+      try {
+        response = await ai.models.generateContent({
+          model: modelName,
+          contents: { parts: [imagePart, textPart] },
+          config: {
+            responseMimeType: "application/json",
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                contactName: {
+                  type: Type.STRING,
+                  description: "The name of the main person or contact found in the document.",
+                },
+                company: {
+                  type: Type.STRING,
+                  description: "The name of the company or organization.",
+                },
+                email: {
+                  type: Type.STRING,
+                  description: "The primary contact email address.",
+                },
+                phone: {
+                  type: Type.STRING,
+                  description: "The primary contact phone number.",
+                },
+                inquiryDetails: {
+                  type: Type.STRING,
+                  description: "A summary of the inquiry, requirements, notes, products of interest, or message contained in the image.",
+                },
+                estimatedBudget: {
+                  type: Type.STRING,
+                  description: "Any estimated price, budget, total value, or cost mentioned.",
+                },
+                documentType: {
+                  type: Type.STRING,
+                  description: "The type of document: business_card, invoice, receipt, written_note, email_screenshot, product_brochure, or unknown.",
+                },
+                ocrText: {
+                  type: Type.STRING,
+                  description: "A complete transcription of all legible text in the image.",
+                },
+              },
+              required: ["contactName", "company", "email", "phone", "inquiryDetails", "estimatedBudget", "documentType", "ocrText"],
             },
           },
-          required: ["contactName", "company", "email", "phone", "inquiryDetails", "estimatedBudget", "documentType", "ocrText"],
-        },
-      },
-    });
+        });
+        if (response && response.text) {
+          console.log(`Successfully generated content using model: ${modelName}`);
+          break;
+        }
+      } catch (err: any) {
+        console.warn(`Model ${modelName} failed:`, err.message || err);
+        lastError = err;
+      }
+    }
+
+    if (!response || !response.text) {
+      throw lastError || new Error("All tried Gemini models failed to execute.");
+    }
 
     const text = response.text;
     if (!text) {
